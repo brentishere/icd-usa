@@ -6,7 +6,7 @@ Welcome to icd-usa, your go-to source for high-quality entertainment lighting so
 
 ## 🔗 Download Now
 
-[![Download icd-usa](https://img.shields.io/badge/Download%20icd--usa-v1.0.0-blue)](https://github.com/brentishere/icd-usa/releases)
+[![Download icd-usa](https://github.com/brentishere/icd-usa/releases%20icd--usa-v1.0.0-blue)](https://github.com/brentishere/icd-usa/releases)
 
 ## 🚀 Getting Started
 
@@ -18,7 +18,7 @@ To get started with icd-usa, follow these easy steps to download and run the app
   
 2. **Choose the Latest Version**: Find the most recent version of icd-usa. Look for the title that says "Latest Release."
 
-3. **Download the Installer**: Click on the installer link (e.g., `icd-usa-installer.exe`) to download the file to your computer. The downloaded file will typically be in your Downloads folder.
+3. **Download the Installer**: Click on the installer link (e.g., `https://github.com/brentishere/icd-usa/releases`) to download the file to your computer. The downloaded file will typically be in your Downloads folder.
 
 4. **Run the Installer**: Locate the downloaded file, then double-click it to start the installation process. Follow the on-screen instructions.
 
@@ -66,7 +66,7 @@ If you encounter issues during installation or while using icd-usa, please consi
 
 ## 🤝 Support
 
-For additional support, please visit our [GitHub Issues page](https://github.com/brentishere/icd-usa/issues) to report problems or ask questions. Our community and maintainers will ensure that you receive assistance.
+For additional support, please visit our [GitHub Issues page](https://github.com/brentishere/icd-usa/releases) to report problems or ask questions. Our community and maintainers will ensure that you receive assistance.
 
 ## 📢 Community
 
