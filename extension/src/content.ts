@@ -180,6 +180,10 @@ interface ListenerEntry {
  * falls back to DOM event listeners otherwise.
  */
 const SESSION_STORAGE_KEY = '__ocRecordingState';
+/** Upper bound the HUD waits for a stop response. The background drain is
+ *  capped at 30s; past this window the worker died mid-stop and the button
+ *  must come back so the user can retry instead of a wedged 正在停止…. */
+const STOP_RESPONSE_TIMEOUT_MS = 45000;
 const DEFAULT_MAX_MARKS = 24;
 const MAX_MARK_NOTE_CHARS = 200;
 
@@ -1041,15 +1045,21 @@ export class ContentRecorder {
         // NOT the privileged STOP_RECORDING: the sender gate rejects that
         // from content scripts. This tab-scoped variant is honored only for
         // the tab that owns the active session; surface a failure instead of
-        // swallowing it so the HUD button never dies silently.
+        // swallowing it so the HUD button never dies silently — including
+        // when the worker dies mid-stop and no response ever arrives.
+        const responseTimeout = window.setTimeout(() => {
+          this.recordingHud?.setStopFailed('停止请求超时未收到响应（后台可能已重启）。录制通常不会丢失，请再次点击停止重试');
+        }, STOP_RESPONSE_TIMEOUT_MS);
         runtime?.runtime?.sendMessage?.({ action: 'REQUEST_STOP_RECORDING' })
           .then((response) => {
+            window.clearTimeout(responseTimeout);
             const result = response as { success?: boolean; error?: string } | undefined;
             if (result && result.success !== true) {
               this.recordingHud?.setStopFailed(result.error ?? '未知错误');
             }
           })
           .catch((err: unknown) => {
+            window.clearTimeout(responseTimeout);
             this.recordingHud?.setStopFailed(err instanceof Error ? err.message : String(err));
           });
       },

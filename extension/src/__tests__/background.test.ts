@@ -373,6 +373,60 @@ describe('background service worker', () => {
       expect(state.state).toBe('idle');
     });
 
+    it('REQUEST_STOP recovers an orphaned tab recording left by a mid-stop worker death', async () => {
+      // Scenario: the worker died during a previous stop — the session is
+      // gone, but the tab's disk checkpoint still carries an unterminated
+      // recording and its content script is still recording. Every stop
+      // used to be rejected with 当前页面没有进行中的录制 forever.
+      const orphanTabId = 42;
+      const chkKey = `oc_recording_chk_${orphanTabId}`;
+      chromeMock.localStorage[chkKey] = {
+        snapshot: makeV2Recording(false), // unterminated
+        options: { protocolVersion: '2.0.0' },
+        selectorToIndex: [],
+        nextIndex: 3,
+        savedAt: Date.now(),
+        tabId: orphanTabId,
+        sessionId: 1,
+      };
+      chromeMock.mock.tabs.sendMessage.mockImplementation(async (_tabId: number, message: unknown) => {
+        if ((message as { action?: string }).action === 'STOP_RECORDING') return { recording: makeV2Recording() };
+        return { success: true };
+      });
+      const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+      await configureRecordingV2(fetchMock);
+      // No START_RECORDING runs in this scenario, so the queued capabilities
+      // response must be dropped before the upload fetch.
+      fetchMock.mockReset();
+      fetchMock.mockResolvedValue({
+        ok: true, status: 201,
+        json: async () => ({ recording: { id: 'orphan-recovered' } }),
+      });
+
+      const stopped = (await sendMessage(
+        { action: 'REQUEST_STOP_RECORDING' },
+        { tab: { id: orphanTabId }, frameId: 0 },
+      )) as { success?: boolean; error?: string; recording?: { meta?: { serverRecordingId?: string } } };
+      expect(stopped.success, JSON.stringify(stopped)).toBe(true);
+      expect(stopped.recording?.meta?.serverRecordingId).toBe('orphan-recovered');
+      // The stale checkpoint that resurrects zombies is cleared.
+      expect(chromeMock.localStorage[chkKey]).toBeUndefined();
+      // The wizard follow-through fires like a normal stop.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(chromeMock.mock.tabs.create).toHaveBeenCalledWith({
+        url: 'chrome-extension://fake-id/intent/intent-page.html',
+      });
+    });
+
+    it('REQUEST_STOP without session or checkpoint still rejects cleanly', async () => {
+      const response = (await sendMessage(
+        { action: 'REQUEST_STOP_RECORDING' },
+        { tab: { id: 42 }, frameId: 0 },
+      )) as { success?: boolean; error?: string };
+      expect(response.success).toBe(false);
+      expect(response.error).toContain('当前页面没有进行中的录制');
+    });
+
     it('rejects the privileged STOP_RECORDING from a content-script sender (popup-only)', async () => {
       const response = await new Promise((resolve) => {
         const sendResponse = vi.fn((r) => resolve(r));

@@ -1641,12 +1641,20 @@ async function stopActiveRecording(): Promise<{
   persistenceWarning?: string;
 }> {
   const session = await loadActiveRecording();
-  // Idempotent stop: an auto limit-stop (size/duration/action) already
-  // finalized and stored a complete recording and cleared the session.
-  // Draining a dead content script again would only time out after 30s,
-  // so return the stored recording — the popup continues into the wizard
-  // exactly like a manual stop and retries any failed upload.
+  const tab = session ? { id: session.tabId } : await getActiveTab();
   if (!session) {
+    // Recovery first: a service worker that died mid-stop can leave the
+    // recording tab running against a stale disk checkpoint with no session.
+    // Draining that tab live beats returning an older stored recording.
+    if (tab?.id && /^https?:/i.test(tab.url ?? tab.pendingUrl ?? '')) {
+      const orphaned = await stopOrphanedTabRecording(tab.id);
+      if (orphaned) return orphaned;
+    }
+    // Idempotent stop: an auto limit-stop (size/duration/action) already
+    // finalized and stored a complete recording and cleared the session.
+    // Draining a dead content script again would only time out after 30s,
+    // so return the stored recording — the popup continues into the wizard
+    // exactly like a manual stop and retries any failed upload.
     const stored = await recordingStore.get();
     if (stored?.version === '2.0.0' && stored.termination?.complete) {
       let persistenceWarning: string | undefined;
@@ -1658,14 +1666,54 @@ async function stopActiveRecording(): Promise<{
       return { success: true, recording: stored, persistenceWarning };
     }
   }
-  const tab = session ? { id: session.tabId } : await getActiveTab();
   if (!tab?.id) {
     return { success: false, error: '没有活动标签页' };
   }
+  const protocol = session?.options.protocolVersion;
+  const finalized = await drainAndFinalize(tab.id, typeof protocol === 'string' ? protocol : undefined);
+  if (finalized.error) return finalized;
+  await saveActiveRecording(null);
+  return finalized;
+}
+
+/** Stops a tab that kept recording against a stale disk checkpoint after the
+ *  service worker died mid-stop (no session exists). The checkpoint's
+ *  unterminated recording is the evidence; the live content script drain is
+ *  the source of truth. Returns null when the tab has no recoverable
+ *  orphan, so callers can fall through to their normal handling. */
+async function stopOrphanedTabRecording(tabId: number): Promise<{
+  success?: boolean;
+  error?: string;
+  recording?: PageAgentRecording;
+  persistenceWarning?: string;
+} | null> {
+  const key = recordingCheckpointKey(tabId);
+  const stored = await chrome.storage.local.get(key).catch(() => undefined);
+  const checkpoint = stored?.[key] as { snapshot?: PageAgentRecording } | undefined;
+  if (!checkpoint?.snapshot || checkpoint.snapshot.termination) return null;
+  const finalized = await drainAndFinalize(tabId, undefined);
+  if (finalized.error) {
+    // Drain failure must not mask the orphan — surface it so the user can
+    // retry; the checkpoint stays for the next attempt.
+    return finalized;
+  }
+  return finalized;
+}
+
+/** Drains STOP_RECORDING from a tab's content script (bounded, with the
+ *  disk-checkpoint fallback), validates the recording, persists it, clears
+ *  the tab's checkpoint, and uploads. Shared by the session stop, the
+ *  session-less orphan recovery, and the idempotent paths. */
+async function drainAndFinalize(tabId: number, expectedProtocol: string | undefined): Promise<{
+  success?: boolean;
+  error?: string;
+  recording?: PageAgentRecording;
+  persistenceWarning?: string;
+}> {
   // A full-page navigation replaces the document and its isolated content
   // script. Ensure the idempotent singleton is attached to the current
   // top-frame document before asking it to drain and stop the recording.
-  await ensureContentScript(tab.id);
+  await ensureContentScript(tabId);
   // Draining a very large recording (heavy React pages can accumulate tens
   // of megabytes of snapshots) can stall the message channel long past any
   // reasonable UI wait. Bound the drain and fall back to the durable disk
@@ -1679,22 +1727,22 @@ async function stopActiveRecording(): Promise<{
   let drainTimedOut = false;
   try {
     response = (await Promise.race([
-      sendToContentScript(tab.id, { action: 'STOP_RECORDING' }),
+      sendToContentScript(tabId, { action: 'STOP_RECORDING' }),
       new Promise((_, reject) => setTimeout(() => reject(new Error('stop-drain-timeout')), STOP_DRAIN_TIMEOUT_MS)),
     ])) as typeof response;
   } catch (drainError) {
     const messageText = drainError instanceof Error ? drainError.message : String(drainError);
     if (messageText !== 'stop-drain-timeout') throw drainError;
     drainTimedOut = true;
-    const checkpoint = await chrome.storage.local.get(recordingCheckpointKey(tab.id)).catch(() => undefined);
-    const checkpointState = checkpoint?.[recordingCheckpointKey(tab.id)] as { recording?: PageAgentRecording } | undefined;
-    if (!checkpointState?.recording) {
+    const checkpoint = await chrome.storage.local.get(recordingCheckpointKey(tabId)).catch(() => undefined);
+    const checkpointState = checkpoint?.[recordingCheckpointKey(tabId)] as { snapshot?: PageAgentRecording } | undefined;
+    if (!checkpointState?.snapshot) {
       return {
         success: false,
         error: '停止录制超时：录制数据过大且没有可用的检查点，请重试或关闭该标签页后重新录制',
       };
     }
-    response = { recording: checkpointState.recording, success: true };
+    response = { recording: checkpointState.snapshot, success: true };
   }
   if (drainTimedOut && response?.recording) {
     // The checkpoint snapshot lags the live buffer; mark the recording as
@@ -1724,9 +1772,6 @@ async function stopActiveRecording(): Promise<{
       recording.snapshots.push(finalSnapshot);
     }
   }
-  const expectedProtocol = typeof session?.options.protocolVersion === 'string'
-    ? session.options.protocolVersion
-    : undefined;
   if (expectedProtocol && recording.version !== expectedProtocol) {
     return {
       success: false,
@@ -1734,12 +1779,9 @@ async function stopActiveRecording(): Promise<{
     };
   }
   await recordingStore.set(recording);
-  await saveActiveRecording(null);
   // D-3: clear the disk-backed checkpoint now that the final recording is
   // durably persisted to recordingStore (IndexedDB).
-  if (tab.id != null) {
-    await chrome.storage.local.remove(recordingCheckpointKey(tab.id)).catch(() => undefined);
-  }
+  await chrome.storage.local.remove(recordingCheckpointKey(tabId)).catch(() => undefined);
   let persistenceWarning: string | undefined;
   if (recording.version === '2.0.0' && recording.termination?.complete) {
     try {
@@ -2008,12 +2050,25 @@ async function handleMessage(
     case 'REQUEST_STOP_RECORDING': {
       const session = await loadActiveRecording();
       if (!session || sender.tab?.id !== session.tabId) {
+        // Recovery: the SW may have died mid-stop earlier, leaving this tab
+        // recording against a stale disk checkpoint with no session — the
+        // state in which every stop request was rejected forever. Drain the
+        // orphan directly when the evidence exists.
+        if (!session && sender.tab?.id != null) {
+          const orphaned = await stopOrphanedTabRecording(sender.tab.id);
+          if (orphaned) {
+            if (orphaned.success) {
+              void openIntentWizardIfAbsent();
+            }
+            return orphaned;
+          }
+        }
         return { success: false, error: '当前页面没有进行中的录制' };
       }
       const response = await stopActiveRecording();
-      // The HUD stop has no popup to open the wizard afterwards — give it
-      // the same follow-through as the auto-stop path (deduplicated by the
-      // tracked wizard tab id).
+      // The HUD stop has no popup to open the wizard afterwards — give it the
+      // same follow-through as the auto-stop path (deduplicated by tracked
+      // wizard tab id).
       if (response.success) {
         void openIntentWizardIfAbsent();
       }

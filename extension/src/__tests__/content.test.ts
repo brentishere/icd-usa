@@ -2141,6 +2141,44 @@ describe('ContentRecorder', () => {
       expect(recording.events.some((e) => (e as { index?: number }).index === pinnedIndex)).toBe(false); // pin only, no event
     });
 
+    it('recovers the HUD stop button when the stop response never arrives', async () => {
+      // Regression for the wedged 正在停止… state: the worker can die
+      // mid-stop, so no response — success or failure — ever arrives. The
+      // button must come back with an actionable toast instead of staying
+      // disabled forever.
+      vi.useFakeTimers();
+      try {
+        document.body.innerHTML = '<button id="go">Go</button>';
+        const never = new Promise<unknown>(() => undefined);
+        const sendMessage = vi.fn(() => never);
+        (globalThis as Record<string, unknown>).chrome = { runtime: { sendMessage } };
+        const recorder = new ContentRecorder({ protocolVersion: '2.0.0', maxEvents: 10 });
+        recorder.start();
+        // Settle the initial capture (frame aggregation times out under the
+        // never-resolving sendMessage mock; the timeout itself is a fake timer).
+        await vi.advanceTimersByTimeAsync(4000);
+
+        const host = document.querySelector('[data-aegis-recording-hud]') as HTMLElement;
+        const btn = host.shadowRoot!.querySelector<HTMLButtonElement>('[data-hud="stop"]')!;
+        btn.click();
+        expect(btn.disabled).toBe(true);
+        expect(btn.textContent).toBe('正在停止…');
+
+        await vi.advanceTimersByTimeAsync(45001);
+        expect(btn.disabled).toBe(false);
+        expect(btn.textContent).toBe('停止录制');
+        const toast = host.shadowRoot!.querySelector('.toast');
+        expect(toast?.getAttribute('role')).toBe('alert');
+        expect(toast?.textContent).toContain('停止请求超时未收到响应');
+
+        const stopped = recorder.stopAsync();
+        await vi.advanceTimersByTimeAsync(10000);
+        await stopped;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('keeps a full snapshot when the page content changes between actions', async () => {
       document.body.innerHTML = '<p id="state">v1</p><button id="mut">Mutate</button>';
       document.getElementById('mut')!.addEventListener('click', () => {
