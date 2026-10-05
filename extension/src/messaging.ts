@@ -1,5 +1,10 @@
-export const MESSAGE_RETRY_ATTEMPTS = 3;
+export const MESSAGE_RETRY_ATTEMPTS = 6;
 export const MESSAGE_RETRY_DELAY_MS = 250;
+/** Cap the linear backoff: after extension reloads the MV3 worker cold
+ *  start of the (large) background bundle can take a couple of seconds, and
+ *  the popup's first GET_STATE must outlive it instead of surfacing
+ *  "Could not establish connection. Receiving end does not exist." */
+export const MESSAGE_RETRY_MAX_DELAY_MS = 1000;
 
 const TRANSIENT_CONNECTION_ERRORS = [
   'could not establish connection',
@@ -44,7 +49,7 @@ export async function sendAction(action: string, payload?: unknown): Promise<unk
       if (!isTransientConnectionError(err) || attempt === MESSAGE_RETRY_ATTEMPTS - 1) {
         throw err;
       }
-      await delay(MESSAGE_RETRY_DELAY_MS * (attempt + 1));
+      await delay(Math.min(MESSAGE_RETRY_DELAY_MS * (attempt + 1), MESSAGE_RETRY_MAX_DELAY_MS));
     }
   }
   throw lastErr;
