@@ -527,6 +527,13 @@ async function persistRecordingV2(recording: PageAgentRecording): Promise<string
   );
   if (!response.ok) {
     const detail = await response.text().catch(() => '');
+    if (response.status === 401 || response.status === 403) {
+      // Keys live in chrome.storage.session and do not survive extension
+      // reloads by design; surface the recovery step instead of a raw 401.
+      throw new Error(
+        `recording persistence failed: ${response.status} 服务端密钥未配置或已失效（扩展重载后需在弹窗中重新保存服务端配置；录制已保留在本地，重试前不会丢失） ${detail}`.trim(),
+      );
+    }
     throw new Error(`recording persistence failed: ${response.status} ${detail}`.trim());
   }
   const data = await response.json() as { recording?: { id?: string } };

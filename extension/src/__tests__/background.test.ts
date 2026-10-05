@@ -1121,7 +1121,7 @@ describe('background service worker', () => {
 
       await sendMessage(
         { action: 'RECORDING_STATUS', payload: { status: 'stopped', recording: makeV2Recording() } },
-        { tab: { id: 42, url: 'https://example.com/' } },
+        { tab: { id: 42, url: 'https://example.com/' }, frameId: 0 },
       );
       await flushAsync();
 
@@ -1129,6 +1129,31 @@ describe('background service worker', () => {
         '[background] automatic recording persistence failed:',
         'recording storage offline',
       );
+    });
+
+    it('maps a 401 upload rejection to the re-save-config recovery hint', async () => {
+      // Keys live in chrome.storage.session and vanish on extension reload;
+      // the raw 401 gives the user no path forward. The mapped error must
+      // name the recovery step and reassure that the recording is kept.
+      const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+      await configureRecordingV2(fetchMock);
+      fetchMock.mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        text: async () => '{"error":"missing authorization header","code":"UNAUTHORIZED"}',
+      });
+      const recording = makeV2Recording();
+      chromeMock.mock.tabs.sendMessage.mockImplementation(async (_tabId: number, message: unknown) => {
+        if ((message as { action?: string }).action === 'STOP_RECORDING') return { recording };
+        return { success: true };
+      });
+      await sendMessage({ action: 'START_RECORDING' });
+      const response = (await sendMessage({ action: 'STOP_RECORDING' })) as {
+        persistenceWarning?: string;
+      };
+      expect(response.persistenceWarning).toContain('服务端密钥未配置或已失效');
+      expect(response.persistenceWarning).toContain('重新保存服务端配置');
+      expect(response.persistenceWarning).toContain('401');
     });
 
     it('reports missing persistence configuration and malformed persistence responses', async () => {
