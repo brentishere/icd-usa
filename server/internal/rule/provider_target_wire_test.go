@@ -305,6 +305,235 @@ func TestProviderOrdinaryTargetResolutionRollsBackOnExtractionFailure(t *testing
 	}
 }
 
+// Providers repeatedly put the FIELD candidate id (f_*) of the element they
+// mean into a target slot (observed twice consecutively in live workflows as
+// "references unknown or out-of-scope selector candidate f_…"). The catalog
+// knows the parentage, so resolution must deterministically recover the
+// parent target candidate, record the coercion, and keep the workflow alive.
+func TestProviderFieldCandidateInTargetSlotIsCoercedToParentTarget(t *testing.T) {
+	catalog := selectorCatalogForTest(t,
+		selectorSnapshotForTest(0, "https://example.test/", selectorResultsForTest(
+			"results",
+			[]selectorCardForTest{
+				{classes: "card", title: true},
+				{classes: "card", title: true},
+			},
+		)),
+	)
+	steps, _ := json.Marshal([]any{
+		map[string]any{
+			"action": "extract", "name": "items", "multiple": true,
+			"target": map[string]any{"selector": "#results > .card", "visible": true},
+			"fields": map[string]any{
+				"title": map[string]any{"type": "text", "selector": ".title"},
+			},
+		},
+	})
+	trusted := &models.Rule{Steps: models.JSON(steps)}
+	prompt, provider, err := catalog.PrepareProviderPrompt(trusted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var scope SelectorPromptCatalog
+	if err := json.Unmarshal([]byte(prompt), &scope); err != nil {
+		t.Fatal(err)
+	}
+	if err := EncodeProviderOrdinaryTargets(provider); err != nil {
+		t.Fatal(err)
+	}
+	var providerSteps []any
+	if err := json.Unmarshal(provider.Steps, &providerSteps); err != nil {
+		t.Fatal(err)
+	}
+	extract := providerSteps[0].(map[string]any)
+	target := extract["target"].(map[string]any)
+	originalRowID, _ := target["rowCandidateId"].(string)
+	if originalRowID == "" {
+		t.Fatal("provider extract target lost its row candidate id")
+	}
+	// Grab the field candidate id the same provider emitted for the title
+	// field and plant it in the target slot — the observed failure shape.
+	fields := extract["fields"].(map[string]any)
+	titleField, _ := fields["title"].(map[string]any)
+	fieldID, _ := titleField["fieldCandidateId"].(string)
+	if fieldID == "" || !strings.HasPrefix(fieldID, "f_") {
+		t.Fatalf("provider field candidate id missing or unexpected: %q", fieldID)
+	}
+	target["rowCandidateId"] = fieldID
+	provider.Steps, _ = json.Marshal(providerSteps)
+	// Control copy left intact to prove the coerced resolution is identical.
+	controlBytes := append([]byte(nil), provider.Steps...)
+	control := &models.Rule{Steps: models.JSON(controlBytes)}
+
+	report, err := catalog.ResolveProviderCandidates(provider, scope.CatalogHash)
+	if err != nil {
+		t.Fatalf("field-candidate-in-target-slot was not recovered: %v", err)
+	}
+	if report.FieldToTargetCoercions != 1 {
+		t.Fatalf("coercion was not recorded for audit: %+v", report)
+	}
+	if _, err := catalog.ResolveProviderCandidates(control, scope.CatalogHash); err != nil {
+		t.Fatalf("control resolution failed: %v", err)
+	}
+	if !bytes.Equal(provider.Steps, control.Steps) {
+		t.Fatalf("coerced resolution differs from the clean control:\ncoerced %s\ncontrol %s", provider.Steps, control.Steps)
+	}
+}
+
+// The other observed shape: a SINGLE extraction referencing a field of a
+// row target — recovered as a repeated extraction of the row with that one
+// field bound, the overwhelming scraping intent.
+func TestProviderSingleExtractionOfRowFieldBecomesRepeatedFieldExtraction(t *testing.T) {
+	catalog := selectorCatalogForTest(t,
+		selectorSnapshotForTest(0, "https://example.test/", selectorResultsForTest(
+			"results",
+			[]selectorCardForTest{
+				{classes: "card", title: true},
+				{classes: "card", title: true},
+			},
+		)),
+	)
+	steps, _ := json.Marshal([]any{
+		map[string]any{
+			"action": "extract", "name": "items", "multiple": true,
+			"target": map[string]any{"selector": "#results > .card", "visible": true},
+			"fields": map[string]any{
+				"title": map[string]any{"type": "text", "selector": ".title"},
+			},
+		},
+	})
+	trusted := &models.Rule{Steps: models.JSON(steps)}
+	prompt, provider, err := catalog.PrepareProviderPrompt(trusted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var scope SelectorPromptCatalog
+	if err := json.Unmarshal([]byte(prompt), &scope); err != nil {
+		t.Fatal(err)
+	}
+	if err := EncodeProviderOrdinaryTargets(provider); err != nil {
+		t.Fatal(err)
+	}
+	var providerSteps []any
+	if err := json.Unmarshal(provider.Steps, &providerSteps); err != nil {
+		t.Fatal(err)
+	}
+	step := providerSteps[0].(map[string]any)
+	// Grab the field candidate id of the row's title field from the prompt
+	// scope and plant the observed failure shape: a SINGLE extraction whose
+	// target slot holds the field candidate id.
+	fieldID := ""
+	for _, target := range scope.Candidates {
+		for _, field := range target.FieldCandidates {
+			fieldID = field.FieldCandidateID
+			break
+		}
+		if fieldID != "" {
+			break
+		}
+	}
+	if fieldID == "" || !strings.HasPrefix(fieldID, "f_") {
+		t.Fatalf("no field candidate id found in scope: %q", fieldID)
+	}
+	step["multiple"] = false
+	step["name"] = "title"
+	delete(step, "fields")
+	step["target"] = map[string]any{"targetCandidateId": fieldID}
+	provider.Steps, _ = json.Marshal(providerSteps)
+
+	report, err := catalog.ResolveProviderCandidates(provider, scope.CatalogHash)
+	if err != nil {
+		t.Fatalf("single-extraction-of-row-field was not recovered: %v", err)
+	}
+	if report.FieldToTargetCoercions != 1 {
+		t.Fatalf("coercion was not recorded: %+v", report)
+	}
+	var resolved []any
+	if err := json.Unmarshal(provider.Steps, &resolved); err != nil {
+		t.Fatal(err)
+	}
+	resolvedStep := resolved[0].(map[string]any)
+	if resolvedStep["multiple"] != true {
+		t.Fatalf("step was not rewritten to repeated extraction: %v", resolvedStep)
+	}
+	fields, _ := resolvedStep["fields"].(map[string]any)
+	title, _ := fields["title"].(map[string]any)
+	if title == nil || title["selector"] == "" {
+		t.Fatalf("bound title field missing its resolved selector: %v", fields)
+	}
+}
+
+// A single extraction naming a ROW target: the provider forgot multiple:true.
+// The step flips to repeated extraction; fields the provider already emitted
+// stay untouched.
+func TestProviderSingleExtractionOfRowTargetFlipsToRepeated(t *testing.T) {
+	catalog := selectorCatalogForTest(t,
+		selectorSnapshotForTest(0, "https://example.test/", selectorResultsForTest(
+			"results",
+			[]selectorCardForTest{
+				{classes: "card", title: true},
+				{classes: "card", title: true},
+			},
+		)),
+	)
+	steps, _ := json.Marshal([]any{
+		map[string]any{
+			"action": "extract", "name": "items", "multiple": true,
+			"target": map[string]any{"selector": "#results > .card", "visible": true},
+			"fields": map[string]any{
+				"title": map[string]any{"type": "text", "selector": ".title"},
+			},
+		},
+	})
+	trusted := &models.Rule{Steps: models.JSON(steps)}
+	prompt, provider, err := catalog.PrepareProviderPrompt(trusted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var scope SelectorPromptCatalog
+	if err := json.Unmarshal([]byte(prompt), &scope); err != nil {
+		t.Fatal(err)
+	}
+	if err := EncodeProviderOrdinaryTargets(provider); err != nil {
+		t.Fatal(err)
+	}
+	var providerSteps []any
+	if err := json.Unmarshal(provider.Steps, &providerSteps); err != nil {
+		t.Fatal(err)
+	}
+	step := providerSteps[0].(map[string]any)
+	target := step["target"].(map[string]any)
+	rowID, _ := target["rowCandidateId"].(string)
+	if rowID == "" || !strings.HasPrefix(rowID, "r_") {
+		t.Fatalf("row candidate id missing: %q", rowID)
+	}
+	// Plant the failure shape: same row id, but a single extraction.
+	step["multiple"] = false
+	target["targetCandidateId"] = rowID
+	delete(target, "rowCandidateId")
+	provider.Steps, _ = json.Marshal(providerSteps)
+
+	report, err := catalog.ResolveProviderCandidates(provider, scope.CatalogHash)
+	if err != nil {
+		t.Fatalf("single-extraction-of-row-target was not recovered: %v", err)
+	}
+	if report.RowCardinalityCoercions != 1 {
+		t.Fatalf("row cardinality coercion was not recorded: %+v", report)
+	}
+	var resolved []any
+	if err := json.Unmarshal(provider.Steps, &resolved); err != nil {
+		t.Fatal(err)
+	}
+	resolvedStep := resolved[0].(map[string]any)
+	if resolvedStep["multiple"] != true {
+		t.Fatalf("step was not flipped to repeated extraction: %v", resolvedStep)
+	}
+	fields, _ := resolvedStep["fields"].(map[string]any)
+	if _, ok := fields["title"]; !ok {
+		t.Fatalf("provider-emitted title field was lost: %v", fields)
+	}
+}
+
 func assertProviderWireTargetsForTest(t *testing.T, values []any, path string) {
 	t.Helper()
 	if err := walkSelectorCandidateActions(values, path, func(step map[string]any, stepPath string) error {

@@ -71,9 +71,18 @@ type SelectorPromptFieldCandidate struct {
 }
 
 type SelectorCandidateResolutionReport struct {
-	Targets         int `json:"targets"`
-	Fields          int `json:"fields"`
-	OrdinaryTargets int `json:"ordinaryTargets,omitempty"`
+	Targets int `json:"targets"`
+	Fields  int `json:"fields"`
+	// FieldToTargetCoercions counts deterministic rewrites where the provider
+	// referenced a field candidate (f_*) in a target slot and the rewrite
+	// recovered the field's parent target candidate. Auditable signal of
+	// provider vocabulary confusion; never silently expands scope.
+	// RowCardinalityCoercions counts single extractions naming a row target
+	// that were flipped to repeated extraction (the provider forgot
+	// multiple:true).
+	OrdinaryTargets         int `json:"ordinaryTargets,omitempty"`
+	FieldToTargetCoercions  int `json:"fieldToTargetCoercions,omitempty"`
+	RowCardinalityCoercions int `json:"rowCardinalityCoercions,omitempty"`
 }
 
 const (
@@ -1681,6 +1690,8 @@ func (c *SelectorEvidenceCatalog) resolveProviderCandidates(
 	extraction, err := c.resolveProviderExtractionCandidates(resolved, claimedCatalogHash)
 	report.Targets = extraction.Targets
 	report.Fields = extraction.Fields
+	report.FieldToTargetCoercions = extraction.FieldToTargetCoercions
+	report.RowCardinalityCoercions = extraction.RowCardinalityCoercions
 	if err != nil {
 		return report, err
 	}
@@ -1989,10 +2000,111 @@ func (c *SelectorEvidenceCatalog) resolveProviderExtractionCandidates(
 		}
 		evidence := c.promptTargets[id]
 		if evidence == nil {
+			// Deterministic recovery: providers repeatedly reference the
+			// FIELD candidate (f_*) of the element they mean to target. The
+			// catalog knows that parentage, so recover instead of failing
+			// the whole workflow — and record every coercion for audit.
+			// Ambiguity still fails closed.
+			if field := c.promptFields[id]; field != nil && field.targetID != "" {
+				parent := c.promptTargets[field.targetID]
+				switch {
+				case multiple && parent != nil && parent.prompt.RowCandidateID != "":
+					// Repeated extraction naming a field of a row target
+					// means the row itself.
+					id = field.targetID
+					rowID = id
+					target["rowCandidateId"] = id
+					delete(target, "targetCandidateId")
+					evidence = parent
+					report.FieldToTargetCoercions++
+				case multiple && parent != nil && parent.prompt.TargetCandidateID != "":
+					// A single-node parent cannot serve a repeated step.
+				case !multiple && parent != nil && parent.prompt.TargetCandidateID != "":
+					// Single extraction naming a field of a single target
+					// means that target.
+					id = field.targetID
+					singleID = id
+					target["targetCandidateId"] = id
+					delete(target, "rowCandidateId")
+					evidence = parent
+					report.FieldToTargetCoercions++
+				case !multiple && parent != nil && parent.prompt.RowCandidateID != "":
+					// Single extraction naming a FIELD of a row target: in
+					// scraping workflows this overwhelming intent is
+					// "extract this field from every row". Rewrite the step
+					// to a repeated extraction of the parent row with that
+					// one field bound to its own candidate — deterministic,
+					// evidence-pure, and audited. Everything downstream
+					// (capability, field resolution) revalidates on the
+					// rewritten step.
+					id = field.targetID
+					step["multiple"] = true
+					multiple = true
+					rowID = id
+					singleID = ""
+					target["rowCandidateId"] = id
+					delete(target, "targetCandidateId")
+					evidence = parent
+					fieldName := strings.TrimSpace(stringValue(step["name"]))
+					if fieldName == "" {
+						fieldName = "field"
+					}
+					fieldsMap := map[string]any{}
+					if existing, ok := step["fields"].(map[string]any); ok {
+						fieldsMap = existing
+					}
+					if _, exists := fieldsMap[fieldName]; !exists {
+						// Rebind under the step's name; an existing explicit
+						// field map keeps its candidates untouched. The bound
+						// type must be one the field's evidence supports.
+						boundType := ""
+						for _, supported := range field.prompt.SupportedTypes {
+							if supported == "text" || boundType == "" {
+								boundType = supported
+							}
+							if supported == "text" {
+								break
+							}
+						}
+						if boundType == "" {
+							return candidateSelectionError(
+								"candidate_kind", path+".target",
+								"%s.target field candidate %q supports no extractable type", path, id,
+							)
+						}
+						bound := map[string]any{"fieldCandidateId": field.prompt.FieldCandidateID, "type": boundType}
+						if existing, ok := fieldsMap[fieldName].(map[string]any); ok {
+							for key, value := range existing {
+								if key != "fieldCandidateId" && key != "type" {
+									bound[key] = value
+								}
+							}
+						}
+						fieldsMap[fieldName] = bound
+					}
+					step["fields"] = fieldsMap
+					report.FieldToTargetCoercions++
+				}
+			}
+		}
+		if evidence == nil {
 			return candidateSelectionError(
 				"candidate_unknown", path+".target",
 				"%s.target references unknown or out-of-scope selector candidate %q", path, id,
 			)
+		}
+		// Deterministic recovery: a single extraction naming a ROW target is
+		// almost always a provider that forgot multiple:true — repeated
+		// extraction of that row. Flip the step; everything downstream
+		// (capability, field canonicalization) revalidates on the rewrite.
+		if !multiple && evidence.prompt.RowCandidateID != "" && evidence.prompt.TargetCandidateID == "" {
+			step["multiple"] = true
+			multiple = true
+			rowID = id
+			singleID = ""
+			target["rowCandidateId"] = id
+			delete(target, "targetCandidateId")
+			report.RowCardinalityCoercions++
 		}
 		if multiple && evidence.prompt.RowCandidateID != id {
 			return candidateSelectionError(
