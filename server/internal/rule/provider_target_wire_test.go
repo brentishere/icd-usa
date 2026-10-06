@@ -534,6 +534,70 @@ func TestProviderSingleExtractionOfRowTargetFlipsToRepeated(t *testing.T) {
 	}
 }
 
+// An extract step that arrives with fields but no target: re-scoped to the
+// single catalog target owning those fields.
+func TestProviderMissingTargetRecoveredFromFieldParentage(t *testing.T) {
+	catalog := selectorCatalogForTest(t,
+		selectorSnapshotForTest(0, "https://example.test/", selectorResultsForTest(
+			"results",
+			[]selectorCardForTest{
+				{classes: "card", title: true},
+				{classes: "card", title: true},
+			},
+		)),
+	)
+	steps, _ := json.Marshal([]any{
+		map[string]any{
+			"action": "extract", "name": "items", "multiple": true,
+			"target": map[string]any{"selector": "#results > .card", "visible": true},
+			"fields": map[string]any{
+				"title": map[string]any{"type": "text", "selector": ".title"},
+			},
+		},
+	})
+	trusted := &models.Rule{Steps: models.JSON(steps)}
+	prompt, provider, err := catalog.PrepareProviderPrompt(trusted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var scope SelectorPromptCatalog
+	if err := json.Unmarshal([]byte(prompt), &scope); err != nil {
+		t.Fatal(err)
+	}
+	if err := EncodeProviderOrdinaryTargets(provider); err != nil {
+		t.Fatal(err)
+	}
+	var providerSteps []any
+	if err := json.Unmarshal(provider.Steps, &providerSteps); err != nil {
+		t.Fatal(err)
+	}
+	step := providerSteps[0].(map[string]any)
+	// Plant the failure shape: drop the target entirely.
+	delete(step, "target")
+	provider.Steps, _ = json.Marshal(providerSteps)
+
+	report, err := catalog.ResolveProviderCandidates(provider, scope.CatalogHash)
+	if err != nil {
+		t.Fatalf("missing-target extract step was not recovered: %v", err)
+	}
+	if report.MissingTargetRecoveries != 1 {
+		t.Fatalf("recovery was not recorded: %+v", report)
+	}
+	var resolved []any
+	if err := json.Unmarshal(provider.Steps, &resolved); err != nil {
+		t.Fatal(err)
+	}
+	resolvedStep := resolved[0].(map[string]any)
+	target, _ := resolvedStep["target"].(map[string]any)
+	if target == nil || target["selector"] == "" {
+		t.Fatalf("recovered target missing its resolved selector: %v", target)
+	}
+	fields, _ := resolvedStep["fields"].(map[string]any)
+	if _, ok := fields["title"]; !ok {
+		t.Fatalf("title field lost after recovery: %v", fields)
+	}
+}
+
 func assertProviderWireTargetsForTest(t *testing.T, values []any, path string) {
 	t.Helper()
 	if err := walkSelectorCandidateActions(values, path, func(step map[string]any, stepPath string) error {

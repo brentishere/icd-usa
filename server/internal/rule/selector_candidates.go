@@ -79,10 +79,13 @@ type SelectorCandidateResolutionReport struct {
 	// provider vocabulary confusion; never silently expands scope.
 	// RowCardinalityCoercions counts single extractions naming a row target
 	// that were flipped to repeated extraction (the provider forgot
-	// multiple:true).
+	// multiple:true). MissingTargetRecoveries counts extract steps that
+	// arrived with fields but no target and were re-scoped to the single
+	// catalog target owning those fields.
 	OrdinaryTargets         int `json:"ordinaryTargets,omitempty"`
 	FieldToTargetCoercions  int `json:"fieldToTargetCoercions,omitempty"`
 	RowCardinalityCoercions int `json:"rowCardinalityCoercions,omitempty"`
+	MissingTargetRecoveries int `json:"missingTargetRecoveries,omitempty"`
 }
 
 const (
@@ -1692,6 +1695,7 @@ func (c *SelectorEvidenceCatalog) resolveProviderCandidates(
 	report.Fields = extraction.Fields
 	report.FieldToTargetCoercions = extraction.FieldToTargetCoercions
 	report.RowCardinalityCoercions = extraction.RowCardinalityCoercions
+	report.MissingTargetRecoveries = extraction.MissingTargetRecoveries
 	if err != nil {
 		return report, err
 	}
@@ -1982,7 +1986,18 @@ func (c *SelectorEvidenceCatalog) resolveProviderExtractionCandidates(
 		}
 		target, ok := step["target"].(map[string]any)
 		if !ok {
-			return fmt.Errorf("%w: %s.target is required", ErrInvalidProvisionalRule, path)
+			// Deterministic recovery: providers sometimes emit an extract
+			// step with fields but no target. When every field candidate
+			// belongs to one catalog target of the right cardinality, that
+			// target is unambiguously the intended row scope — synthesize it
+			// and record the recovery for audit.
+			if recovered := c.recoverMissingTargetFromFields(step, multiple); recovered != nil {
+				step["target"] = recovered
+				target = recovered
+				report.MissingTargetRecoveries++
+			} else {
+				return fmt.Errorf("%w: %s.target is required", ErrInvalidProvisionalRule, path)
+			}
 		}
 		rowID := strings.TrimSpace(stringValue(target["rowCandidateId"]))
 		singleID := strings.TrimSpace(stringValue(target["targetCandidateId"]))
@@ -2190,6 +2205,55 @@ func (c *SelectorEvidenceCatalog) resolveProviderExtractionCandidates(
 		rule.Hooks = encodedHooks
 	}
 	return report, nil
+}
+
+// recoverMissingTargetFromFields synthesizes a target map for an extract
+// step the provider emitted without one. It succeeds only when the step's
+// field candidates all belong to exactly one catalog target whose
+// cardinality matches the step; otherwise it returns nil and the caller
+// fails closed.
+func (c *SelectorEvidenceCatalog) recoverMissingTargetFromFields(
+	step map[string]any,
+	multiple bool,
+) map[string]any {
+	fields, ok := step["fields"].(map[string]any)
+	if !ok || len(fields) == 0 {
+		return nil
+	}
+	commonParent := ""
+	for _, rawField := range fields {
+		field, ok := rawField.(map[string]any)
+		if !ok {
+			return nil
+		}
+		id := strings.TrimSpace(stringValue(field["fieldCandidateId"]))
+		if id == "" {
+			return nil
+		}
+		evidence := c.promptFields[id]
+		if evidence == nil || evidence.targetID == "" {
+			return nil
+		}
+		if commonParent == "" {
+			commonParent = evidence.targetID
+		} else if commonParent != evidence.targetID {
+			return nil
+		}
+	}
+	parent := c.promptTargets[commonParent]
+	if parent == nil {
+		return nil
+	}
+	if multiple {
+		if parent.prompt.RowCandidateID == "" {
+			return nil
+		}
+		return map[string]any{"rowCandidateId": commonParent}
+	}
+	if parent.prompt.TargetCandidateID == "" {
+		return nil
+	}
+	return map[string]any{"targetCandidateId": commonParent}
 }
 
 func canonicalizeProviderFieldCollection(raw any, path string) (map[string]any, error) {
