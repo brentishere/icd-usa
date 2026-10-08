@@ -209,7 +209,7 @@ curl -X POST http://localhost:8080/admin/tasks \
   }'
 ```
 
-然后在已安装 ScriptCat 的浏览器中加载 `dist/aegiscrawler-0.2.0.user.js`，Worker 会自动轮询并执行任务。
+然后在已安装 ScriptCat 的浏览器中加载两个用户脚本：`dist/aegiscrawler-dispatcher-<version>.user.js`（后台调度器，自动轮询认领任务并派发）与 `dist/aegiscrawler-<version>.user.js`（页面执行器）。调度器按其 GM 存储中的 `serverUrl`/`workerId` 配置轮询，认领后自动打开标签执行并回传结果；详见 [`docs/browser-worker.md`](docs/browser-worker.md)。
 
 ### LLM 增强使用流程（可选）
 

@@ -1,6 +1,6 @@
 import type { Environment, RuntimeContext, Transport, Target, Snapshot } from './types';
 import { findElement, findElements } from './selectors';
-import { sleep } from './utils';
+import { sleep, base64ToUtf8 } from './utils';
 import { evaluateInSandbox } from './sandbox';
 
 declare const unsafeWindow: Window;
@@ -111,7 +111,9 @@ export function loadTaskFromHash(): TaskDescriptorFromHash | null {
   const match = hash.match(/#scrape=([A-Za-z0-9+/=_-]+)/);
   if (!match) return null;
   try {
-    const json = atob(decodeURIComponent(match[1]));
+    // UTF-8-safe base64 decode: plain-ASCII descriptors (legacy btoa)
+    // round-trip identically; Unicode variables need the byte-wise path.
+    const json = base64ToUtf8(decodeURIComponent(match[1]));
     const result = JSON.parse(json);
     if (!isTrustedServerUrl(result.serverUrl)) {
       console.error('[AegisCrawler] rejected untrusted serverUrl in hash:', result.serverUrl);

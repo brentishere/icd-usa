@@ -91,3 +91,24 @@ export function toNumber(value: any): number | null {
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+/** UTF-8-safe base64: btoa/atob alone only handle Latin-1, but task
+ *  descriptors carry arbitrary Unicode variables. Chunked so large payloads
+ *  cannot blow the argument limit. Plain-ASCII payloads round-trip exactly
+ *  like raw btoa/atob, so legacy descriptors stay readable. */
+export function utf8ToBase64(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...Array.from(bytes.subarray(i, i + CHUNK)));
+  }
+  return btoa(binary);
+}
+
+export function base64ToUtf8(encoded: string): string {
+  const binary = atob(encoded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}

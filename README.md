@@ -127,10 +127,13 @@ Then in Chrome: *Extensions → Manage → Load unpacked* → select `dist/exten
 ### 4. Run it as a task
 
 Open the Admin UI at `http://localhost:8080/admin/` (log in with the Admin API
-key), create a one-shot or cron task from your rule, then load the userscript
-(`dist/aegiscrawler-0.2.0.user.js`) into a browser running
-[ScriptCat](https://github.com/scriptscat/scriptcat) — the worker claims the
-task, executes the rule, and reports results back.
+key), create a one-shot or cron task from your rule, then load both
+userscripts into a browser running
+[ScriptCat](https://github.com/scriptscat/scriptcat) — the background
+dispatcher (`dist/aegiscrawler-dispatcher-<version>.user.js`) claims tasks
+and opens executor tabs; the executor
+(`dist/aegiscrawler-<version>.user.js`) runs the rule and reports results
+back. See `docs/browser-worker.md` for configuration.
 
 ## LLM rule enhancement (optional)
 
