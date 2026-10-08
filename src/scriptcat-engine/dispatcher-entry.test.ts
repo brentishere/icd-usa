@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { resolveEntryUrl, encodeDescriptor } from './dispatcher-entry';
+import { resolveEntryUrl, encodeDescriptor, closeDispatchedTab } from './dispatcher-entry';
 import { base64ToUtf8 } from './utils';
 
 // The dispatcher entry self-starts on import when GM APIs exist; stub them as
@@ -89,5 +89,30 @@ describe('dispatcher helpers', () => {
       browserProfileId: 'profile-a',
       pollIntervalMs: 3000,
     });
+  });
+
+  it('closes dispatched tabs through the handle, with one async retry', () => {
+    vi.useFakeTimers();
+    try {
+      const close = vi.fn();
+      // First close call may run before the handle resolves its tab id
+      // (closed stays false) — the retry shortly after must fire again.
+      const handle = { close, closed: false };
+      closeDispatchedTab(handle);
+      expect(close).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(2_100);
+      expect(close).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // When the handle reports closed synchronously (tab id never resolved or
+    // the tab is already gone), no retry timer is armed.
+    const close2 = vi.fn();
+    closeDispatchedTab({ close: close2, closed: true });
+    expect(close2).toHaveBeenCalledTimes(1);
+
+    // A throwing close (already-gone tab) must not break the dispatcher.
+    expect(() => closeDispatchedTab({ close: () => { throw new Error('no tab'); }, closed: true })).not.toThrow();
   });
 });

@@ -77,6 +77,7 @@ async function buildDispatcher() {
 // background context; no @match needed.
 // @background
 ${COMMON_GRANTS}// @grant        GM_openInTab
+// @grant        GM_closeInTab
 // ==/UserScript==
 
 `;

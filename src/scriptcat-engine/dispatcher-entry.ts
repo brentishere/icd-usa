@@ -223,6 +223,23 @@ async function waitTerminal(cfg: DispatcherConfig, taskId: string): Promise<void
   log('warn', `task ${taskId} did not reach a terminal state within the wait cap; lease expiry will retry`);
 }
 
+/** Close a dispatched tab through the GM_openInTab handle. The executor's
+ *  own window.close() is a no-op here: Chrome only lets PAGE script close
+ *  script-opened windows, and GM_openInTab opens via chrome.tabs.create, so
+ *  tab lifetime is the dispatcher's responsibility. The handle resolves its
+ *  tab id asynchronously, so retry once shortly after. */
+function closeDispatchedTab(handle: { close: () => void; closed?: boolean }): void {
+  try {
+    handle.close();
+  } catch { /* already gone */ }
+  if (handle.closed) return;
+  setTimeout(() => {
+    try {
+      handle.close();
+    } catch { /* already gone */ }
+  }, 2_000);
+}
+
 async function dispatchTask(task: ClaimedTask, cfg: DispatcherConfig): Promise<void> {
   let rule = task.rule;
   if (!rule) {
@@ -248,7 +265,11 @@ async function dispatchTask(task: ClaimedTask, cfg: DispatcherConfig): Promise<v
   }
   log('info', `dispatched ${task.taskId} -> ${entryUrl}`);
   await heartbeatOnce(cfg, task.taskId);
-  await waitTerminal(cfg, task.taskId);
+  try {
+    await waitTerminal(cfg, task.taskId);
+  } finally {
+    closeDispatchedTab(tab);
+  }
 }
 
 async function runDispatcherLoop(): Promise<void> {
@@ -291,4 +312,4 @@ if (typeof GM_getValue === 'function') {
   console.error('[AegisCrawler Dispatcher] userscript manager GM APIs unavailable');
 }
 
-export { resolveEntryUrl, encodeDescriptor, readConfig };
+export { resolveEntryUrl, encodeDescriptor, readConfig, closeDispatchedTab };
