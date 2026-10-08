@@ -273,6 +273,11 @@ export class PageMarkOverlay {
   private elementFromPoint(x: number, y: number): Element | null {
     const element = document.elementFromPoint(x, y);
     if (!element || this.host?.contains(element)) return null;
+    // Other extension UI (the recording HUD and its stop button) must stay
+    // clickable while marking is active: the capture-phase click interceptor
+    // would otherwise swallow the event and hijack it into a mark popover
+    // targeting the HUD host.
+    if (element.closest('[data-aegis-recording-hud]')) return null;
     if (element === document.documentElement || element === document.body) return null;
     return element;
   }

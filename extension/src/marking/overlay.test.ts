@@ -182,4 +182,38 @@ describe('PageMarkOverlay', () => {
     overlay.unmount();
     expect(document.querySelector('[data-aegis-page-mark-overlay]')).toBeNull();
   });
+
+  it('lets recording-HUD clicks pass through while marking is active', () => {
+    // Regression for the live UX glitch: the capture-phase click interceptor
+    // swallowed the HUD stop button's click and opened a mark popover
+    // targeting the HUD host, making 停止录制 unreachable during marking.
+    const adapter = createAdapter();
+    const overlay = new PageMarkOverlay(adapter);
+    overlay.mount();
+    const hudHost = document.createElement('div');
+    hudHost.setAttribute('data-aegis-recording-hud', '');
+    const stopButton = document.createElement('button');
+    stopButton.type = 'button';
+    stopButton.textContent = '停止录制';
+    hudHost.appendChild(stopButton);
+    document.body.appendChild(hudHost);
+    const hudClick = vi.fn();
+    stopButton.addEventListener('click', hudClick);
+
+    clickShadowButton('标注采集意图');
+    // elementFromPoint returns the HUD HOST for shadow content (as the real
+    // browser does); the click itself targets the stop button inside it.
+    pointTo(hudHost);
+    stopButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+
+    // The click reached the HUD button instead of being intercepted.
+    expect(hudClick).toHaveBeenCalledTimes(1);
+    // And no mark popover opened for the HUD host.
+    const popover = hostRoot().querySelector('.popover') as HTMLElement;
+    expect(popover.style.display).not.toBe('block');
+    expect(adapter.saved).toEqual([]);
+
+    hudHost.remove();
+    overlay.unmount();
+  });
 });
