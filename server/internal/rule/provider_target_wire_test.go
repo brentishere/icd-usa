@@ -598,6 +598,71 @@ func TestProviderMissingTargetRecoveredFromFieldParentage(t *testing.T) {
 	}
 }
 
+// A repeated extraction whose candidate ID sits in the single slot: moved
+// to the row slot (the provider forgot which key the ID belongs under).
+func TestProviderRowSlotMismatchIsMovedToMatchCardinality(t *testing.T) {
+	catalog := selectorCatalogForTest(t,
+		selectorSnapshotForTest(0, "https://example.test/", selectorResultsForTest(
+			"results",
+			[]selectorCardForTest{
+				{classes: "card", title: true},
+				{classes: "card", title: true},
+			},
+		)),
+	)
+	steps, _ := json.Marshal([]any{
+		map[string]any{
+			"action": "extract", "name": "items", "multiple": true,
+			"target": map[string]any{"selector": "#results > .card", "visible": true},
+			"fields": map[string]any{
+				"title": map[string]any{"type": "text", "selector": ".title"},
+			},
+		},
+	})
+	trusted := &models.Rule{Steps: models.JSON(steps)}
+	prompt, provider, err := catalog.PrepareProviderPrompt(trusted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var scope SelectorPromptCatalog
+	if err := json.Unmarshal([]byte(prompt), &scope); err != nil {
+		t.Fatal(err)
+	}
+	if err := EncodeProviderOrdinaryTargets(provider); err != nil {
+		t.Fatal(err)
+	}
+	var providerSteps []any
+	if err := json.Unmarshal(provider.Steps, &providerSteps); err != nil {
+		t.Fatal(err)
+	}
+	step := providerSteps[0].(map[string]any)
+	target := step["target"].(map[string]any)
+	rowID, _ := target["rowCandidateId"].(string)
+	if rowID == "" {
+		t.Fatal("row candidate id missing")
+	}
+	// Plant the failure shape: repeated step, ID under the single key.
+	target["targetCandidateId"] = rowID
+	delete(target, "rowCandidateId")
+	provider.Steps, _ = json.Marshal(providerSteps)
+
+	report, err := catalog.ResolveProviderCandidates(provider, scope.CatalogHash)
+	if err != nil {
+		t.Fatalf("row-slot mismatch was not recovered: %v", err)
+	}
+	if report.RowSlotCoercions != 1 {
+		t.Fatalf("slot coercion was not recorded: %+v", report)
+	}
+	var resolved []any
+	if err := json.Unmarshal(provider.Steps, &resolved); err != nil {
+		t.Fatal(err)
+	}
+	resolvedTarget := resolved[0].(map[string]any)["target"].(map[string]any)
+	if resolvedTarget["selector"] == "" {
+		t.Fatalf("resolved target lost its selector: %v", resolvedTarget)
+	}
+}
+
 func assertProviderWireTargetsForTest(t *testing.T, values []any, path string) {
 	t.Helper()
 	if err := walkSelectorCandidateActions(values, path, func(step map[string]any, stepPath string) error {

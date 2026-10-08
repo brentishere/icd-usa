@@ -81,11 +81,13 @@ type SelectorCandidateResolutionReport struct {
 	// that were flipped to repeated extraction (the provider forgot
 	// multiple:true). MissingTargetRecoveries counts extract steps that
 	// arrived with fields but no target and were re-scoped to the single
-	// catalog target owning those fields.
+	// catalog target owning those fields. RowSlotCoercions counts target IDs
+	// moved between the row/single slots to match the step's cardinality.
 	OrdinaryTargets         int `json:"ordinaryTargets,omitempty"`
 	FieldToTargetCoercions  int `json:"fieldToTargetCoercions,omitempty"`
 	RowCardinalityCoercions int `json:"rowCardinalityCoercions,omitempty"`
 	MissingTargetRecoveries int `json:"missingTargetRecoveries,omitempty"`
+	RowSlotCoercions        int `json:"rowSlotCoercions,omitempty"`
 }
 
 const (
@@ -1696,6 +1698,7 @@ func (c *SelectorEvidenceCatalog) resolveProviderCandidates(
 	report.FieldToTargetCoercions = extraction.FieldToTargetCoercions
 	report.RowCardinalityCoercions = extraction.RowCardinalityCoercions
 	report.MissingTargetRecoveries = extraction.MissingTargetRecoveries
+	report.RowSlotCoercions = extraction.RowSlotCoercions
 	if err != nil {
 		return report, err
 	}
@@ -2002,7 +2005,20 @@ func (c *SelectorEvidenceCatalog) resolveProviderExtractionCandidates(
 		rowID := strings.TrimSpace(stringValue(target["rowCandidateId"]))
 		singleID := strings.TrimSpace(stringValue(target["targetCandidateId"]))
 		if (rowID == "") == (singleID == "") {
+			// Both empty or both populated: no single unambiguous candidate.
 			return fmt.Errorf("%w: %s.target must contain exactly one opaque selector candidate ID", ErrInvalidProvisionalRule, path)
+		}
+		if multiple && rowID == "" && singleID != "" {
+			// Deterministic recovery: a repeated extraction that put its ID
+			// in the single slot forgot which key it belongs under. Move it
+			// to the row slot; the cardinality check below revalidates that
+			// the candidate is actually a row candidate. The mirror case
+			// (single step, row slot) stays an error by contract.
+			target["rowCandidateId"] = singleID
+			delete(target, "targetCandidateId")
+			rowID = singleID
+			singleID = ""
+			report.RowSlotCoercions++
 		}
 		id := singleID
 		if multiple {
