@@ -15,6 +15,7 @@ import (
 	"github.com/singhand-labs/AegisCrawler/internal/config"
 	"github.com/singhand-labs/AegisCrawler/internal/llm"
 	"github.com/singhand-labs/AegisCrawler/internal/llm/budget"
+	"github.com/singhand-labs/AegisCrawler/internal/llm/prompt"
 	"github.com/singhand-labs/AegisCrawler/internal/models"
 	platformrecording "github.com/singhand-labs/AegisCrawler/internal/recording"
 	platformrule "github.com/singhand-labs/AegisCrawler/internal/rule"
@@ -1917,5 +1918,133 @@ func TestGenerationPersistsContentFilterSafetyFlagsOnWorkflow(t *testing.T) {
 	}
 	if !strings.Contains(workflowSafetyFlags, "content-filter:external-url") {
 		t.Fatalf("expected dsl_workflows.safety_flags to include content-filter:external-url, got %q", workflowSafetyFlags)
+	}
+}
+
+func TestRequestFeedbackRepairRunsUserRejectionThroughReplayPipeline(t *testing.T) {
+	persistence, ctx := newDSLManagerStore(t)
+	cfg := &config.Config{LLMEnabled: true}
+	manager := NewDSLManager(persistence, cfg, nil, zap.NewNop())
+
+	// A workflow whose generation completed and whose replay succeeded
+	// schema-valid: awaiting_confirmation is exactly the state where the user
+	// may still judge the executed steps or extracted values wrong.
+	requirement := createDSLManagerRequirement(t, persistence, ctx, cfg, models.RequirementSourceLLM)
+	baseline := dslWorkflowBaseline()
+	workflow := &models.DSLWorkflow{
+		ID: "dsl-workflow-feedback", RequirementID: requirement.ID,
+		RecordingID: requirement.RecordingID, BrowserProfileID: "current-chrome-profile",
+	}
+	job, err := persistence.CreateDSLWorkflow(ctx, workflow, map[string]any{
+		"baselineRule": map[string]any{"id": baseline.ID},
+	}, store.DSLWorkflowOptions{MaxRepairs: 2, JobMaxAttempts: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := persistence.ClaimPendingDSLJob(context.Background(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed.ID != job.ID {
+		t.Fatalf("unexpected claimed job: %+v", claimed)
+	}
+	if err := persistence.CompleteDSLJob(ctx, claimed, baseline, "id: "+baseline.ID+"\n", map[string]any{"marker": "x"}); err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := persistence.StartDSLReplay(ctx, workflow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := persistence.CompleteDSLReplay(ctx, attempt, true, true, nil,
+		map[string]any{"name": "Example", "price": 10.5}, nil, "", "", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Feedback validation stays fail-closed before any state changes.
+	if _, err := manager.RequestFeedbackRepair(ctx, workflow.ID, "   ", nil); !errors.Is(err, ErrInvalidWorkflowInput) {
+		t.Fatalf("blank feedback must be rejected, got %v", err)
+	}
+	if _, err := manager.RequestFeedbackRepair(ctx, workflow.ID, strings.Repeat("长", maxFeedbackRepairRunes+1), nil); !errors.Is(err, ErrInvalidWorkflowInput) {
+		t.Fatalf("oversized feedback must be rejected, got %v", err)
+	}
+
+	// The user rejection schedules a repair through the normal pipeline.
+	repair, err := manager.RequestFeedbackRepair(ctx, workflow.ID,
+		"第 3 步点错了按钮，提取的 price 少了货币符号",
+		map[string]any{"executedSteps": []string{"navigate", "click"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repair == nil || repair.Kind != models.DSLJobRepair || repair.PromptVersion != prompt.DSLWorkflowVersion {
+		t.Fatalf("unexpected feedback repair job: %+v", repair)
+	}
+	stored, err := persistence.GetDSLWorkflow(ctx, workflow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != models.DSLWorkflowRepairing || stored.RepairCount != 1 || stored.CurrentJobID != repair.ID {
+		t.Fatalf("unexpected repairing workflow: %+v", stored)
+	}
+	// Claiming decrypts the sealed request for the worker.
+	claimedRepair, err := persistence.ClaimPendingDSLJob(context.Background(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimedRepair.ID != repair.ID {
+		t.Fatalf("feedback repair was not claimable: %+v", claimedRepair)
+	}
+	request, _ := claimedRepair.Request.(map[string]any)
+	if request == nil {
+		t.Fatalf("claimed repair request was not decrypted: %T", claimedRepair.Request)
+	}
+	diagnostics, _ := request["diagnostics"].(map[string]any)
+	if diagnostics["userFeedback"] != "第 3 步点错了按钮，提取的 price 少了货币符号" ||
+		diagnostics["repairTrigger"] != "user-feedback" ||
+		diagnostics["errorCode"] != "USER_REJECTED" {
+		t.Fatalf("sealed repair request lost the feedback contract: %+v", diagnostics)
+	}
+	if _, ok := diagnostics["executedSteps"]; !ok {
+		t.Fatalf("sanitized evidence did not reach the repair diagnostics: %+v", diagnostics)
+	}
+
+	// The worker repairs: the workflow returns to awaiting_replay for a fresh
+	// full replay, keeping approval gated on user satisfaction.
+	if err := persistence.CompleteDSLJob(ctx, claimedRepair, baseline, "id: "+baseline.ID+"\n", map[string]any{"marker": "y"}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err = persistence.GetDSLWorkflow(ctx, workflow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != models.DSLWorkflowAwaitingReplay || stored.RepairCount != 1 {
+		t.Fatalf("repaired workflow must await a fresh replay: %+v", stored)
+	}
+
+	// Budget exhaustion surfaces a distinct error instead of failing the
+	// workflow terminally behind the client's back.
+	if _, err := persistence.DB().Exec(
+		`UPDATE dsl_workflows SET repair_count = max_repairs WHERE id = ?`, workflow.ID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	// Move to awaiting_confirmation again so the feedback gate is open.
+	attempt2, err := persistence.StartDSLReplay(ctx, workflow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := persistence.CompleteDSLReplay(ctx, attempt2, true, true, nil,
+		map[string]any{"name": "Example", "price": 10.5}, nil, "", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.RequestFeedbackRepair(ctx, workflow.ID, "最后一次修正", nil); err == nil ||
+		!errors.Is(err, store.ErrDSLRepairBudgetExhausted) {
+		t.Fatalf("expected budget exhaustion, got %v", err)
+	}
+	after, err := persistence.GetDSLWorkflow(ctx, workflow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != models.DSLWorkflowAwaitingConfirmation {
+		t.Fatalf("exhausted pre-check must not terminally fail the workflow: %+v", after)
 	}
 }

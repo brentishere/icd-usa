@@ -1030,3 +1030,54 @@ header h1 {
   border-color: var(--ag-danger);
   background: var(--ag-danger-soft);
 }
+
+/* Step-4 AI feedback repair panel: shown only after a finished replay so the
+   operator can reject wrong steps/results and let the LLM repair the rule. */
+.replay-feedback {
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid var(--ag-border-strong);
+  border-radius: var(--ag-radius-md);
+  background: var(--ag-surface);
+}
+
+.replay-feedback h3 {
+  margin: 0 0 6px;
+  font-size: var(--ag-text-md);
+  color: var(--ag-text);
+}
+
+.replay-feedback textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font: 13px var(--ag-font-mono);
+  padding: 10px;
+  border: 1px solid var(--ag-border-strong);
+  border-radius: var(--ag-radius-sm);
+  color: var(--ag-text);
+  resize: vertical;
+}
+
+.replay-feedback textarea:focus {
+  outline: none;
+  border-color: var(--ag-primary);
+  box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.15);
+}
+
+.replay-feedback textarea:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.feedback-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.feedback-actions .hint {
+  flex: 1;
+  text-align: left;
+}

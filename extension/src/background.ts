@@ -263,6 +263,7 @@ const PRIVILEGED_ACTIONS = new Set([
   'RESUME_DSL_WORKFLOW',
   'START_DSL_REPLAY',
   'COMPLETE_DSL_REPLAY',
+  'REQUEST_DSL_FEEDBACK_REPAIR',
   'CONFIRM_DSL_WORKFLOW',
   'GENERATE_DSL_FROM_INTENT',
   'GENERATE_DSL_FROM_INTENT_SERVER',
@@ -1625,6 +1626,7 @@ const STATE_MUTATING_ACTIONS = new Set([
   'ABORT_REPLAY',
   'START_DSL_REPLAY',
   'COMPLETE_DSL_REPLAY',
+  'REQUEST_DSL_FEEDBACK_REPAIR',
   'CONFIRM_DSL_WORKFLOW',
   'UPLOAD_CONFIRMED_RULE',
   'ENHANCE_RULE',
@@ -2475,6 +2477,42 @@ async function handleMessage(
         if (!workflow) throw new Error('服务端未返回更新后的 DSL 工作流');
         await rememberDSLWorkflow(workflow, payload.replayId);
         return dslWorkflowResult(workflow, { replay: response.replay, repairJob: response.repairJob });
+      } catch (error) {
+        const code = error instanceof ServerRequestError ? error.code : undefined;
+        return {
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+          ...(code ? { code } : {}),
+        };
+      }
+    }
+
+    case 'REQUEST_DSL_FEEDBACK_REPAIR': {
+      const payload = message.payload as {
+        workflowId?: string;
+        feedback?: string;
+        evidence?: unknown;
+      } | undefined;
+      if (!payload?.workflowId || !payload.feedback?.trim()) {
+        return { success: false, error: '缺少 DSL 工作流 ID 或修正反馈' };
+      }
+      try {
+        const response = await requirementRequest<DSLReplayResponse>(
+          `/api/v1/dsl-workflows/${encodeURIComponent(payload.workflowId)}/feedback-repairs`,
+          {
+            method: 'POST',
+            body: JSON.stringify({ feedback: payload.feedback, evidence: payload.evidence }),
+          },
+          LLM_FETCH_TIMEOUT_MS,
+        );
+        const workflow = response.repairJob
+          ? await pollDSLWorkflow(payload.workflowId)
+          : (await requirementRequest<DSLWorkflowResponse>(
+            `/api/v1/dsl-workflows/${encodeURIComponent(payload.workflowId)}`,
+          )).workflow;
+        if (!workflow) throw new Error('服务端未返回更新后的 DSL 工作流');
+        await rememberDSLWorkflow(workflow);
+        return dslWorkflowResult(workflow, { replay: undefined, repairJob: response.repairJob });
       } catch (error) {
         const code = error instanceof ServerRequestError ? error.code : undefined;
         return {

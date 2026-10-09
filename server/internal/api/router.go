@@ -74,6 +74,7 @@ func NewRouter(h *Handler, cfg *config.Config, logger *zap.Logger, metrics *Metr
 	mux.HandleFunc("POST /api/v1/dsl-workflows/{id}/replays", adminAuth(IdempotencyMiddleware(h.store, DefaultIdempotencyTTL, http.HandlerFunc(h.StartDSLReplay))).ServeHTTP)
 	mux.HandleFunc("GET /api/v1/dsl-replays/{id}", adminAuth(http.HandlerFunc(h.GetDSLReplay)).ServeHTTP)
 	mux.HandleFunc("POST /api/v1/dsl-workflows/{id}/replays/{replayId}/complete", adminAuth(http.HandlerFunc(h.CompleteDSLReplay)).ServeHTTP)
+	mux.HandleFunc("POST /api/v1/dsl-workflows/{id}/feedback-repairs", adminAuth(enhanceRateLimit(http.HandlerFunc(h.FeedbackRepairDSLWorkflow))).ServeHTTP)
 	mux.HandleFunc("POST /api/v1/dsl-workflows/{id}/confirm", adminAuth(http.HandlerFunc(h.ConfirmDSLWorkflow)).ServeHTTP)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/results", adminAuth(http.HandlerFunc(h.GetVersionedTaskResults)).ServeHTTP)
 	mux.HandleFunc("POST /admin/rules", adminAuth(http.HandlerFunc(h.CreateRule)).ServeHTTP)

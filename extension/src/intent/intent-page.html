@@ -102,6 +102,16 @@
       <p class="hint">系统将在新标签页真实执行生成的 DSL，下方显示执行日志与提取结果。</p>
       <div id="replay-stage"></div>
 
+      <div id="replay-feedback-section" class="replay-feedback hidden">
+        <h3>AI 修正回放问题</h3>
+        <p class="hint">当执行的步骤不对或提取的结果不符合预期时，描述问题让 AI 修正规则；修正完成后会自动重新完整回放。满意后再进入下一步确认回放并批准版本。</p>
+        <textarea id="replay-feedback" rows="4" maxlength="2000" placeholder="例如：第 3 步点错了筛选按钮，应先展开“高级筛选”；提取的 price 少了货币符号"></textarea>
+        <div class="wizard-actions feedback-actions">
+          <span id="replay-feedback-budget" class="hint"></span>
+          <button type="button" id="replay-feedback-submit" class="primary">AI 修正并重新回放</button>
+        </div>
+      </div>
+
       <div id="correct-rule-section-replay" class="correct-rule-section hidden">
         <h3>人工修正规则</h3>
         <p class="hint">生成失败时可在下方编辑完整规则（JSON）并直接提交人工修正。必须保留录制派生的 id、version、entry、domain；服务端会执行与模型输出相同的安全校验，修正后进入完整回放。</p>

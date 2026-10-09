@@ -20,25 +20,28 @@ import (
 )
 
 type fakeDSLWorkflowManager struct {
-	workflow       *models.DSLWorkflow
-	job            *models.DSLJob
-	replay         *models.ReplayAttempt
-	version        *models.RuleVersion
-	contract       *models.RuleVersionContract
-	repairJob      *models.DSLJob
-	err            error
-	requirementID  string
-	profileID      string
-	baseline       *models.Rule
-	correction     *models.Rule
-	completion     llmdsl.ReplayCompletionInput
-	completionFlow string
-	completionID   string
-	attempts       []*models.LLMAttemptReport
-	attemptDetail  *llmdsl.DSLAttemptDetail
-	providerCall   *models.LLMProviderCall
-	adoptedExport  llmdsl.AdminReviewedDSLAttemptExport
-	confirmOpts    store.ApproveDSLWorkflowOptions
+	workflow         *models.DSLWorkflow
+	job              *models.DSLJob
+	replay           *models.ReplayAttempt
+	version          *models.RuleVersion
+	contract         *models.RuleVersionContract
+	repairJob        *models.DSLJob
+	err              error
+	requirementID    string
+	profileID        string
+	baseline         *models.Rule
+	correction       *models.Rule
+	completion       llmdsl.ReplayCompletionInput
+	completionFlow   string
+	completionID     string
+	feedbackFlow     string
+	feedback         string
+	feedbackEvidence any
+	attempts         []*models.LLMAttemptReport
+	attemptDetail    *llmdsl.DSLAttemptDetail
+	providerCall     *models.LLMProviderCall
+	adoptedExport    llmdsl.AdminReviewedDSLAttemptExport
+	confirmOpts      store.ApproveDSLWorkflowOptions
 }
 
 func (f *fakeDSLWorkflowManager) Submit(_ context.Context, requirementID, profileID string, baseline *models.Rule) (*models.DSLWorkflow, *models.DSLJob, error) {
@@ -87,6 +90,11 @@ func (f *fakeDSLWorkflowManager) Correct(_ context.Context, _ string, correction
 func (f *fakeDSLWorkflowManager) CompleteReplay(_ context.Context, workflowID, replayID string, input llmdsl.ReplayCompletionInput) (*models.ReplayAttempt, *models.DSLJob, error) {
 	f.completionFlow, f.completionID, f.completion = workflowID, replayID, input
 	return f.replay, f.repairJob, f.err
+}
+
+func (f *fakeDSLWorkflowManager) RequestFeedbackRepair(_ context.Context, workflowID, feedback string, evidence any) (*models.DSLJob, error) {
+	f.feedbackFlow, f.feedback, f.feedbackEvidence = workflowID, feedback, evidence
+	return f.repairJob, f.err
 }
 
 func (f *fakeDSLWorkflowManager) Confirm(_ context.Context, _ string, opts store.ApproveDSLWorkflowOptions) (*models.RuleVersion, *models.RuleVersionContract, error) {
@@ -474,4 +482,45 @@ func TestConfirmDSLWorkflowOverrideRequiresAdminPrincipal(t *testing.T) {
 			t.Fatalf("OverrideActor not set to admin subject, got %q", manager.confirmOpts.OverrideActor)
 		}
 	})
+}
+
+func TestFeedbackRepairRouteForwardsFeedbackAndMapsBudgetExhaustion(t *testing.T) {
+	manager := &fakeDSLWorkflowManager{
+		repairJob: &models.DSLJob{ID: "repair-1", WorkflowID: "workflow-1", Kind: models.DSLJobRepair},
+	}
+	router := dslWorkflowAPIRouter(t, manager, true)
+
+	body, _ := json.Marshal(llmdsl.FeedbackRepairInput{
+		Feedback: "第 3 步点错了按钮，price 缺货币符号",
+		Evidence: map[string]any{"executedSteps": []string{"navigate", "click"}},
+	})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/dsl-workflows/workflow-1/feedback-repairs", bytes.NewReader(body))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted || manager.feedbackFlow != "workflow-1" ||
+		manager.feedback != "第 3 步点错了按钮，price 缺货币符号" ||
+		manager.feedbackEvidence == nil {
+		t.Fatalf("feedback repair failed: status=%d body=%s manager=%+v", response.Code, response.Body.String(), manager)
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte(`"repairJob"`)) || !bytes.Contains(response.Body.Bytes(), []byte("repair-1")) {
+		t.Fatalf("feedback repair response must carry the repair job: %s", response.Body.String())
+	}
+
+	// Unknown fields stay rejected so the contract cannot drift silently.
+	strict, _ := json.Marshal(map[string]any{"feedback": "x", "unexpected": true})
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/dsl-workflows/workflow-1/feedback-repairs", bytes.NewReader(strict))
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("unknown fields must be rejected: status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	// Budget exhaustion maps to a distinct, client-actionable conflict code.
+	manager.err = store.ErrDSLRepairBudgetExhausted
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/dsl-workflows/workflow-1/feedback-repairs", bytes.NewReader(body))
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || !bytes.Contains(response.Body.Bytes(), []byte("REPAIR_BUDGET_EXHAUSTED")) {
+		t.Fatalf("budget exhaustion mapping failed: status=%d body=%s", response.Code, response.Body.String())
+	}
 }

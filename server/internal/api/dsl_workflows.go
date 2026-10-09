@@ -27,6 +27,7 @@ type dslWorkflowManager interface {
 	StartReplay(context.Context, string) (*models.ReplayAttempt, error)
 	Correct(context.Context, string, *models.Rule) (*models.DSLWorkflow, error)
 	CompleteReplay(context.Context, string, string, llmdsl.ReplayCompletionInput) (*models.ReplayAttempt, *models.DSLJob, error)
+	RequestFeedbackRepair(context.Context, string, string, any) (*models.DSLJob, error)
 	Confirm(context.Context, string, store.ApproveDSLWorkflowOptions) (*models.RuleVersion, *models.RuleVersionContract, error)
 	GetDSLApprovalProvenance(context.Context, string) (*store.DSLApprovalProvenance, error)
 }
@@ -467,6 +468,51 @@ func (h *Handler) CompleteDSLReplay(w http.ResponseWriter, r *http.Request) {
 		}(),
 	})
 	writeJSON(w, http.StatusOK, DSLReplayResponse{Replay: attempt, RepairJob: repairJob})
+}
+
+// FeedbackRepairDSLWorkflow godoc
+// @Summary Request an operator-driven LLM repair of the provisional rule
+// @Description Accepts the operator's dissatisfaction feedback (wrong executed steps or wrong extracted values) plus bounded sanitized evidence, and schedules one durable repair job sharing the workflow's bounded repair budget. The workflow returns to awaiting_replay only after the repaired rule passes full validation; approval stays gated on a fresh successful replay.
+// @Tags dsl-workflows
+// @Accept json
+// @Produce json
+// @Security AdminApiKey
+// @Param id path string true "DSL workflow ID"
+// @Param request body FeedbackRepairRequest true "Dissatisfaction feedback and optional replay evidence"
+// @Success 202 {object} DSLReplayResponse
+// @Failure 400 {object} ErrorResponse
+// @Failure 401 {object} ErrorResponse
+// @Failure 404 {object} ErrorResponse
+// @Failure 409 {object} ErrorResponse
+// @Failure 413 {object} ErrorResponse
+// @Failure 500 {object} ErrorResponse
+// @Failure 503 {object} ErrorResponse
+// @Router /api/v1/dsl-workflows/{id}/feedback-repairs [post]
+func (h *Handler) FeedbackRepairDSLWorkflow(w http.ResponseWriter, r *http.Request) {
+	if !h.dslWorkflowAvailable(w) {
+		return
+	}
+	var input llmdsl.FeedbackRepairInput
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid feedback repair request")
+		return
+	}
+	job, err := h.dslWorkflows.RequestFeedbackRepair(r.Context(), r.PathValue("id"), input.Feedback, input.Evidence)
+	if err != nil {
+		if errors.Is(err, store.ErrDSLRepairBudgetExhausted) {
+			writeError(w, http.StatusConflict, "REPAIR_BUDGET_EXHAUSTED", err.Error())
+			return
+		}
+		h.writeDSLWorkflowError(w, err)
+		return
+	}
+	h.auditLog(r.Context(), "dsl_feedback_repair_requested", "dsl_workflow", r.PathValue("id"), map[string]any{
+		"workflowId": r.PathValue("id"),
+		"jobId":      job.ID,
+	})
+	writeJSON(w, http.StatusAccepted, DSLReplayResponse{RepairJob: job})
 }
 
 // ConfirmDSLWorkflow godoc

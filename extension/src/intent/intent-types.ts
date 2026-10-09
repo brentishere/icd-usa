@@ -291,6 +291,7 @@ export type InFlightOp =
   | 'workflow-dsl'
   | 'start-replay'
   | 'complete-replay'
+  | 'feedback-repair'
   | 'abort-replay'
   | 'confirm-workflow'
   | 'save-rule'
@@ -336,6 +337,8 @@ export interface WizardState {
   replayVariables: Record<string, unknown>;
   replayExtracted: Record<string, unknown>;
   replayResults: unknown[];
+  repairCount: number;
+  maxRepairs: number;
   pageMarks: PageMark[];
 }
 

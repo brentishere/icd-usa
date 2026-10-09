@@ -786,7 +786,13 @@ func TestGenerationAndRepairPromptsDeclareSchemaExtractionActions(t *testing.T) 
 			t.Fatalf("prompt must require a non-empty extraction name: %q", prompt)
 		}
 	}
-	if prompt.DSLWorkflowVersion != "dsl-workflow-v50" ||
+	// Operator-driven feedback repairs (v51) ride the repair prompt via the
+	// userFeedback diagnostics key; the contract must stay documented.
+	if !strings.Contains(repairSystemPrompt, "userFeedback: the operator's own description") ||
+		!strings.Contains(repairSystemPrompt, "treat it as the primary correction goal") {
+		t.Fatalf("repair prompt must document the userFeedback correction contract")
+	}
+	if prompt.DSLWorkflowVersion != "dsl-workflow-v51" ||
 		WorkflowPromptVersion != prompt.DSLWorkflowVersion {
 		t.Fatalf(
 			"prompt contract change must bump the authoritative durable workflow version: prompt=%q workflow=%q",

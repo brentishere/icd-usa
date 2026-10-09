@@ -130,7 +130,10 @@ func LoadProductionLLMPolicy(llmEnabled bool, lookup EnvLookup) (*ProductionLLMP
 	if policy.DSLGenerationMaxAttempts, err = requiredBoundedInt("LLM_DSL_GENERATION_MAX_ATTEMPTS", 1, 3, lookup); err != nil {
 		return nil, err
 	}
-	if policy.DSLMaxRepairs, err = requiredBoundedInt("LLM_DSL_MAX_REPAIRS", 0, 2, lookup); err != nil {
+	// Upper bound 5 (was 2): operator-driven feedback repairs share this
+	// budget with replay-failure repairs, and iterate-to-satisfaction needs
+	// more than two rounds. Still bounded — every repair is a paid LLM call.
+	if policy.DSLMaxRepairs, err = requiredBoundedInt("LLM_DSL_MAX_REPAIRS", 0, 5, lookup); err != nil {
 		return nil, err
 	}
 	if policy.SelectorMaxRepairs, err = requiredBoundedInt("LLM_SELECTOR_MAX_REPAIRS", 0, 1, lookup); err != nil {

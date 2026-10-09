@@ -291,7 +291,7 @@ func TestLoadProductionLLMPolicy_EnforcedRejectsInvalidPolicyInputs(t *testing.T
 			env["LLM_DSL_MAX_REPAIRS"] = "-1"
 		},
 		"repairs too high": func(env map[string]string) {
-			env["LLM_DSL_MAX_REPAIRS"] = "3"
+			env["LLM_DSL_MAX_REPAIRS"] = "6"
 		},
 		"selector repairs too low": func(env map[string]string) {
 			env["LLM_SELECTOR_MAX_REPAIRS"] = "-1"

@@ -60,6 +60,11 @@ const WIZARD_HTML = `
     </section>
     <section id="step-replay" class="step hidden">
       <div id="replay-stage"></div>
+      <div id="replay-feedback-section" class="replay-feedback hidden">
+        <textarea id="replay-feedback"></textarea>
+        <span id="replay-feedback-budget"></span>
+        <button id="replay-feedback-submit"></button>
+      </div>
       <div id="correct-rule-section-replay" class="correct-rule-section hidden">
         <textarea id="correct-rule-editor-replay"></textarea>
         <button id="correct-rule-submit-replay"></button>
@@ -3355,5 +3360,107 @@ describe('wizard generation failure surfaces the correction editor', () => {
     expect(section.classList.contains('hidden')).toBe(false);
     const editor = document.getElementById('correct-rule-editor-gen') as HTMLTextAreaElement;
     expect(JSON.parse(editor.value)).toEqual(baselineRule);
+  });
+});
+
+describe('requestFeedbackRepair', () => {
+  beforeEach(() => {
+    document.body.innerHTML = WIZARD_HTML;
+  });
+
+  function seedFeedbackState(mod: typeof import('./intent-page')): void {
+    mod.state.workflowV2 = true;
+    mod.state.dslWorkflowId = 'wf-1';
+    mod.state.replayStatus = 'success';
+    mod.state.repairCount = 0;
+    mod.state.maxRepairs = 3;
+    // startReplay refuses workflow-V2 runs without a confirmed requirement.
+    mod.state.normalizedRequirement = { title: '需求', requiredInputs: [], optionalInputs: [], outputFields: [] } as never;
+    mod.state.replayLogs = [
+      { type: 'log', level: 'info', message: 'navigate ok' },
+      { type: 'log', level: 'error', message: 'extract missed currency' },
+    ] as never;
+    mod.state.replayExtracted = { price: '129' };
+    const textarea = document.getElementById('replay-feedback') as HTMLTextAreaElement;
+    textarea.value = '第 3 步点错了按钮，price 缺货币符号';
+  }
+
+  it('rejects empty feedback without calling the background', async () => {
+    const { mod, sendMessage } = await importModule({});
+    mod.state.workflowV2 = true;
+    mod.state.dslWorkflowId = 'wf-1';
+    mod.state.replayStatus = 'success';
+    const textarea = document.getElementById('replay-feedback') as HTMLTextAreaElement;
+    textarea.value = '   ';
+
+    await mod.requestFeedbackRepair();
+
+    expect((sendMessage as Mock).mock.calls.some(
+      (call: unknown[]) => (call[0] as { action: string }).action === 'REQUEST_DSL_FEEDBACK_REPAIR',
+    )).toBe(false);
+    expect(mod.state.replayStatus).toBe('success');
+  });
+
+  it('sends feedback with bounded evidence and restarts the replay loop', async () => {
+    const { mod, sendMessage } = await importModule({
+      REQUEST_DSL_FEEDBACK_REPAIR: {
+        success: true,
+        workflow: {
+          id: 'wf-1',
+          status: 'awaiting_replay',
+          repairCount: 1,
+          maxRepairs: 3,
+          provisionalRule: sampleRule,
+          provisionalYaml: 'id: rule-1\n',
+        },
+      },
+      START_DSL_REPLAY: { success: true, replay: { id: 'r-2' } },
+      START_REPLAY: { success: true, taskId: 't-2' },
+    });
+    seedFeedbackState(mod);
+
+    await mod.requestFeedbackRepair();
+
+    const request = (sendMessage as Mock).mock.calls.find(
+      (call: unknown[]) => (call[0] as { action: string }).action === 'REQUEST_DSL_FEEDBACK_REPAIR',
+    ) as [{ action: string; payload?: { workflowId?: string; feedback?: string; evidence?: { executedSteps?: string[]; extractedSample?: string } } }] | undefined;
+    expect(request?.[0]?.payload?.workflowId).toBe('wf-1');
+    expect(request?.[0]?.payload?.feedback).toContain('price 缺货币符号');
+    expect(request?.[0]?.payload?.evidence?.executedSteps).toHaveLength(2);
+    expect(request?.[0]?.payload?.evidence?.extractedSample).toContain('129');
+    // The repaired provisional rule replaced the wizard copy and a fresh full
+    // replay was started automatically.
+    expect(mod.state.rule).toEqual(sampleRule);
+    expect(mod.state.repairCount).toBe(1);
+    expect(mod.state.maxRepairs).toBe(3);
+    expect((sendMessage as Mock).mock.calls.some(
+      (call: unknown[]) => (call[0] as { action: string }).action === 'START_DSL_REPLAY',
+    )).toBe(true);
+    expect((sendMessage as Mock).mock.calls.some(
+      (call: unknown[]) => (call[0] as { action: string }).action === 'START_REPLAY',
+    )).toBe(true);
+    // The textarea is cleared for the next round.
+    expect((document.getElementById('replay-feedback') as HTMLTextAreaElement).value).toBe('');
+  });
+
+  it('surfaces budget exhaustion without starting another replay', async () => {
+    const { mod, sendMessage } = await importModule({
+      REQUEST_DSL_FEEDBACK_REPAIR: {
+        success: false,
+        code: 'REPAIR_BUDGET_EXHAUSTED',
+        error: 'dsl workflow repair budget exhausted',
+      },
+    });
+    seedFeedbackState(mod);
+    mod.state.replayStatus = 'failure';
+
+    await mod.requestFeedbackRepair();
+
+    expect(mod.state.replayStatus).toBe('failure');
+    expect((sendMessage as Mock).mock.calls.some(
+      (call: unknown[]) => (call[0] as { action: string }).action === 'START_DSL_REPLAY',
+    )).toBe(false);
+    const status = document.getElementById('status');
+    expect(status?.textContent).toContain('AI 修正次数已用完');
   });
 });

@@ -25,6 +25,10 @@ var (
 	ErrReplayNotFound      = errors.New("dsl replay attempt not found")
 	ErrReplayState         = errors.New("dsl replay attempt cannot transition from its current state")
 	ErrSafetyBlockingFlag  = errors.New("dsl workflow has blocking safety flags requiring override")
+	// ErrDSLRepairBudgetExhausted reports that the workflow's bounded repair
+	// budget is spent; it is distinct from ErrDSLWorkflowState so clients can
+	// surface "no repairs left" without implying an illegal state transition.
+	ErrDSLRepairBudgetExhausted = errors.New("dsl workflow repair budget exhausted")
 )
 
 // SafetyBlockingFlagError carries the blocking flag list so the HTTP layer
@@ -115,7 +119,7 @@ func (s *Store) CreateDSLWorkflow(ctx context.Context, workflow *models.DSLWorkf
 		if options[0].JobMaxAttempts >= 1 && options[0].JobMaxAttempts <= 3 {
 			jobMaxAttempts = options[0].JobMaxAttempts
 		}
-		if options[0].MaxRepairs >= 0 && options[0].MaxRepairs <= 3 {
+		if options[0].MaxRepairs >= 0 && options[0].MaxRepairs <= 5 {
 			workflow.MaxRepairs = options[0].MaxRepairs
 		}
 	}

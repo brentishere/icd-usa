@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/singhand-labs/AegisCrawler/internal/authz"
 	"github.com/singhand-labs/AegisCrawler/internal/config"
@@ -101,6 +102,15 @@ type RepairJobRequest struct {
 	Diagnostics    any                     `json:"diagnostics" swaggertype:"object"`
 	Artifacts      []models.ReplayArtifact `json:"artifacts,omitempty"`
 	ReplaySequence int                     `json:"replaySequence"`
+}
+
+// FeedbackRepairInput is the bounded client payload for an operator-driven
+// repair round: free-text dissatisfaction feedback plus optional replay
+// evidence (executed-step log tail, extracted sample) that is sanitized
+// server-side before it reaches the repair prompt.
+type FeedbackRepairInput struct {
+	Feedback string `json:"feedback"`
+	Evidence any    `json:"evidence,omitempty" swaggertype:"object"`
 }
 
 type ReplayCompletionInput struct {
@@ -894,6 +904,74 @@ func (m *Manager) CompleteReplay(ctx context.Context, workflowID, replayID strin
 
 func (m *Manager) Confirm(ctx context.Context, workflowID string, opts store.ApproveDSLWorkflowOptions) (*models.RuleVersion, *models.RuleVersionContract, error) {
 	return m.store.ApproveDSLWorkflow(ctx, workflowID, opts)
+}
+
+// maxFeedbackRepairRunes bounds the operator's free-text dissatisfaction
+// description before it is embedded in the repair prompt diagnostics.
+const maxFeedbackRepairRunes = 2000
+
+// RequestFeedbackRepair schedules an operator-driven repair round for a
+// provisional rule the user judged wrong (executed steps or extracted values)
+// even when the last replay was schema-valid. The rejection is modeled as a
+// short-lived replay attempt completed with USER_REJECTED, so the feedback
+// rides the exact same sealed-diagnostics envelope, bounded repair budget,
+// state machine, and durable repair pipeline as replay-failure repairs; the
+// workflow returns to awaiting_replay only after the repaired rule passes the
+// full validation gates, and approval stays gated on a fresh replay.
+func (m *Manager) RequestFeedbackRepair(ctx context.Context, workflowID, feedback string, evidence any) (*models.DSLJob, error) {
+	trimmed := strings.TrimSpace(feedback)
+	if trimmed == "" {
+		return nil, workflowInputError("feedback", errors.New("feedback must not be empty"))
+	}
+	if utf8.RuneCountInString(trimmed) > maxFeedbackRepairRunes {
+		return nil, workflowInputError("feedback", fmt.Errorf("feedback exceeds %d characters", maxFeedbackRepairRunes))
+	}
+	workflow, err := m.store.GetDSLWorkflow(ctx, workflowID)
+	if err != nil {
+		return nil, err
+	}
+	if workflow.ProvisionalRule == nil {
+		return nil, workflowInputError("feedback", errors.New("workflow has no provisional rule to repair"))
+	}
+	// Pre-check the shared repair budget so an exhausted workflow surfaces a
+	// clear code instead of being terminally failed by the completion path.
+	if workflow.RepairCount >= workflow.MaxRepairs {
+		return nil, store.ErrDSLRepairBudgetExhausted
+	}
+	if err := enforceJSONSize(evidence, maxReplayDiagnosticsInputBytes, "evidence"); err != nil {
+		return nil, err
+	}
+	safeEvidence := sanitizeReplayDiagnostics(evidence)
+	if err := enforceJSONSize(safeEvidence, maxReplayDiagnosticsBytes, "sanitized evidence"); err != nil {
+		return nil, err
+	}
+	diagnostics := mergeDiagnostics(safeEvidence, map[string]any{
+		"userFeedback":  trimmed,
+		"repairTrigger": "user-feedback",
+		"errorCode":     "USER_REJECTED",
+	})
+	attempt, err := m.store.StartDSLReplay(ctx, workflowID)
+	if err != nil {
+		return nil, err
+	}
+	repairRequest := RepairJobRequest{
+		CurrentRule:    workflow.ProvisionalRule,
+		Diagnostics:    diagnostics,
+		ReplaySequence: attempt.Sequence,
+	}
+	repairJob, err := m.store.CompleteDSLReplay(ctx, attempt, false, false,
+		diagnostics, nil, nil, "USER_REJECTED", safeMessage(trimmed, 1000),
+		repairRequest, m.cfg.DSLGenerationMaxAttempts())
+	if err != nil {
+		return nil, err
+	}
+	if repairJob == nil {
+		// The budget was consumed concurrently between the pre-check and the
+		// atomic completion; the workflow is now terminally failed, so report
+		// the exhaustion instead of a misleading success.
+		return nil, store.ErrDSLRepairBudgetExhausted
+	}
+	return repairJob, nil
 }
 
 func (m *Manager) GetDSLApprovalProvenance(ctx context.Context, workflowID string) (*store.DSLApprovalProvenance, error) {

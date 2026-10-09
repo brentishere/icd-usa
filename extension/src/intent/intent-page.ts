@@ -110,6 +110,8 @@ export const state: WizardState = {
   replayVariables: {},
   replayExtracted: {},
   replayResults: [],
+  repairCount: 0,
+  maxRepairs: 0,
   pageMarks: [],
 };
 
@@ -566,6 +568,8 @@ export async function resumeDSLWorkflow(): Promise<boolean> {
     state.replayAttemptId = response.replayId ?? null;
     state.browserProfileId = workflow.browserProfileId;
     state.rule = workflow.provisionalRule ?? null;
+    state.repairCount = workflow.repairCount ?? 0;
+    state.maxRepairs = workflow.maxRepairs ?? 0;
     state.yaml = workflow.provisionalYaml ?? '';
     if (workflow.status === 'awaiting_replay' && state.rule) {
       renderPreview();
@@ -1691,6 +1695,8 @@ export function completeWorkflowReplay(
       state.dslJobId = response.repairJob?.id ?? response.workflow.currentJobId ?? null;
       if (response.workflow.status === 'awaiting_replay' && response.workflow.provisionalRule) {
         state.rule = response.workflow.provisionalRule;
+        state.repairCount = response.workflow.repairCount ?? state.repairCount;
+        state.maxRepairs = response.workflow.maxRepairs ?? state.maxRepairs;
         state.yaml = response.workflow.provisionalYaml ?? '';
         state.replayStatus = 'idle';
         state.replayError = null;
@@ -1880,6 +1886,124 @@ export function updateReplayConfirmButton(): void {
   if (state.step !== 'replay') return;
   const primary = getEl<HTMLButtonElement>('action-primary');
   if (primary) primary.disabled = state.replayStatus !== 'success';
+  updateReplayFeedbackPanel();
+}
+
+/** Bounded tail of what the operator just watched: executed-step log lines and
+ *  a capped extraction sample. The server re-sanitizes everything; this only
+ *  keeps the payload small enough for one request. */
+function buildReplayFeedbackEvidence(): Record<string, unknown> {
+  const MAX_LOG_LINES = 40;
+  const MAX_SAMPLE_CHARS = 2000;
+  const executedSteps = state.replayLogs
+    .slice(-MAX_LOG_LINES)
+    .map((log) => {
+      if (log.type === 'log') return `[${log.level}] ${log.message}`;
+      if (log.type === 'status') return `[status] ${log.status}: ${log.message ?? ''}`;
+      if (log.type === 'snapshot') return `[snapshot] ${log.snapshot.name}`;
+      if (log.type === 'result') return `[result] ${JSON.stringify(log.payload)}`;
+      return '';
+    })
+    .filter((line) => line !== '');
+  const extractedSource = Object.keys(state.replayExtracted).length > 0
+    ? state.replayExtracted
+    : { results: state.replayResults };
+  let extractedSample = '';
+  try {
+    extractedSample = JSON.stringify(extractedSource) ?? '';
+  } catch {
+    extractedSample = '';
+  }
+  if (extractedSample.length > MAX_SAMPLE_CHARS) {
+    extractedSample = `${extractedSample.slice(0, MAX_SAMPLE_CHARS)}…`;
+  }
+  const evidence: Record<string, unknown> = { executedSteps };
+  if (extractedSample) evidence.extractedSample = extractedSample;
+  if (state.replayError) evidence.lastReplayError = state.replayError;
+  return evidence;
+}
+
+/** The AI-correction panel appears only for workflow-V2 replays that have
+ *  finished (success or failure): a running replay has nothing to judge yet,
+ *  and approval remains a separate explicit action. */
+export function updateReplayFeedbackPanel(): void {
+  const section = getEl<HTMLDivElement>('replay-feedback-section');
+  if (!section) return;
+  const finished = state.replayStatus === 'success' || state.replayStatus === 'failure' || state.replayStatus === 'cancelled';
+  const eligible = state.workflowV2 && !!state.dslWorkflowId && finished && state.replayStatus !== 'running';
+  section.classList.toggle('hidden', !eligible);
+  if (!eligible) return;
+  const remaining = Math.max(0, state.maxRepairs - state.repairCount);
+  const budgetEl = getEl<HTMLSpanElement>('replay-feedback-budget');
+  const submit = getEl<HTMLButtonElement>('replay-feedback-submit');
+  const exhausted = remaining === 0;
+  if (budgetEl) {
+    budgetEl.textContent = exhausted
+      ? 'AI 修正次数已用完'
+      : `剩余 AI 修正次数 ${remaining}/${state.maxRepairs}`;
+  }
+  if (submit) submit.disabled = exhausted;
+}
+
+export function requestFeedbackRepair(): Promise<void> {
+  return withInFlight('feedback-repair', async () => {
+    const feedback = getEl<HTMLTextAreaElement>('replay-feedback')?.value.trim() ?? '';
+    if (!state.dslWorkflowId) {
+      setStatus('缺少 DSL 工作流 ID，无法请求 AI 修正', 'error');
+      return;
+    }
+    if (!feedback) {
+      setStatus('请先描述回放中哪里不对（例如哪一步错误、哪个字段提取错了）', 'warning');
+      return;
+    }
+    state.loading = true;
+    setStatus('正在让 AI 按你的反馈修正规则...', 'info');
+    try {
+      const response = (await sendAction('REQUEST_DSL_FEEDBACK_REPAIR', {
+        workflowId: state.dslWorkflowId,
+        feedback,
+        evidence: buildReplayFeedbackEvidence(),
+      })) as DSLWorkflowResult & { code?: string };
+      if (!response.success || !response.workflow) {
+        if (response.code === 'REPAIR_BUDGET_EXHAUSTED') {
+          state.replayStatus = state.replayStatus === 'success' ? 'success' : 'failure';
+          setStatus('AI 修正次数已用完；可人工修正规则或重新生成工作流', 'error');
+        } else {
+          setStatus(response.error || 'AI 修正请求失败', 'error');
+        }
+        state.loading = false;
+        updateReplayFeedbackPanel();
+        return;
+      }
+      state.repairCount = response.workflow.repairCount ?? state.repairCount;
+      state.maxRepairs = response.workflow.maxRepairs ?? state.maxRepairs;
+      if (response.workflow.status === 'awaiting_replay' && response.workflow.provisionalRule) {
+        state.rule = response.workflow.provisionalRule;
+        state.yaml = response.workflow.provisionalYaml ?? '';
+        state.replayStatus = 'idle';
+        state.replayError = null;
+        state.loading = false;
+        renderPreview();
+        const textarea = getEl<HTMLTextAreaElement>('replay-feedback');
+        if (textarea) textarea.value = '';
+        setStatus(`AI 修正 ${response.workflow.repairCount}/${response.workflow.maxRepairs} 已完成，正在重新完整回放`, 'info');
+        await startReplay();
+        return;
+      }
+      state.replayStatus = 'failure';
+      state.replayError = response.workflow.errorMessage || 'AI 修正未能产生可回放的规则';
+      setStatus(state.replayError, 'error');
+    } catch (error) {
+      state.replayStatus = state.replayStatus === 'success' ? 'success' : 'failure';
+      setStatus(formatServerError('AI 修正失败：', error instanceof Error ? error.message : String(error)), 'error');
+    } finally {
+      if (state.replayStatus !== 'running') {
+        state.loading = false;
+      }
+      renderReplayMonitor();
+      updateReplayFeedbackPanel();
+    }
+  }) as Promise<void>;
 }
 
 export function renderConfirmList(): void {
@@ -2410,6 +2534,9 @@ export function initWizard(): void {
       submitRuleCorrection(scope).catch((err) => setStatus(formatServerError('操作失败：', err instanceof Error ? err.message : String(err)), 'error'));
     });
   }
+  getEl<HTMLButtonElement>('replay-feedback-submit')?.addEventListener('click', () => {
+    requestFeedbackRepair().catch((error) => setStatus(String(error), 'error'));
+  });
   getEl<HTMLButtonElement>('retry-requirement-job')?.addEventListener('click', () => {
     retryRequirementJob().catch((error) => setStatus(String(error), 'error'));
   });
