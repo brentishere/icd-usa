@@ -18,11 +18,16 @@ export default function Dashboard() {
     async function load() {
       setLoading(true);
       try {
-        const [rulesResp, tasksResp] = await Promise.all([
-          listRules({ limit: 1000 }),
-          listTasks({ limit: 10 }),
-        ]);
-        setRules(rulesResp.rules);
+        // listRules rejects limit > 500; page through so dashboard counts
+        // stay correct in busy workspaces.
+        const collected: Rule[] = [];
+        for (let offset = 0; offset < 5000; offset += 500) {
+          const resp = await listRules({ limit: 500, offset });
+          collected.push(...resp.rules);
+          if (collected.length >= resp.total || resp.rules.length === 0) break;
+        }
+        const tasksResp = await listTasks({ limit: 10 });
+        setRules(collected);
         setTasks(tasksResp.tasks);
       } finally {
         setLoading(false);

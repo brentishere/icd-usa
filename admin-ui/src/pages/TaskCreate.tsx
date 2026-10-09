@@ -95,8 +95,15 @@ export default function TaskCreate() {
     const fetchRules = async () => {
       setLoading(true);
       try {
-        const response = await listRules({ limit: 1000 });
-        setRules(response.rules);
+        // listRules rejects limit > 500; page through so busy workspaces
+        // still see every rule in the picker.
+        const collected: Rule[] = [];
+        for (let offset = 0; offset < 5000; offset += 500) {
+          const response = await listRules({ limit: 500, offset });
+          collected.push(...response.rules);
+          if (collected.length >= response.total || response.rules.length === 0) break;
+        }
+        setRules(collected);
       } catch (error) {
         message.error(error instanceof Error ? error.message : '加载规则失败');
       } finally {
