@@ -422,7 +422,7 @@ func TestDSLWorkflowAnalyzesEveryOrderedChunkBeforeSynthesis(t *testing.T) {
 		return completion(ruleEnvelope(t, baseline)), nil
 	}}
 	workflow := NewDSLWorkflow(&config.Config{
-		LLMEnabled: true, LLMMaxInputTokens: 30_000, LLMMaxOutputTokens: maxOutputTokens,
+		LLMEnabled: true, LLMMaxInputTokens: 31_000, LLMMaxOutputTokens: maxOutputTokens,
 	}, fake)
 	large := strings.Repeat("visible semantic text ", 600)
 	recording := map[string]any{
@@ -473,7 +473,9 @@ func TestDSLWorkflowReportsPerChunkProgress(t *testing.T) {
 		}
 		return completion(ruleEnvelope(t, baseline)), nil
 	}}
-	workflow := NewDSLWorkflow(&config.Config{LLMEnabled: true, LLMMaxInputTokens: 30_000}, fake)
+	// dsl-workflow-v50 grew the generation prompt; keep this chunked fixture
+	// inside the (deliberately small) configured context.
+	workflow := NewDSLWorkflow(&config.Config{LLMEnabled: true, LLMMaxInputTokens: 31_000}, fake)
 	large := strings.Repeat("visible semantic text ", 600)
 	recording := map[string]any{
 		"session": "recording-1",
@@ -777,8 +779,14 @@ func TestGenerationAndRepairPromptsDeclareSchemaExtractionActions(t *testing.T) 
 		if !strings.Contains(prompt, "Never invent extraction action names such as extractList or extractMultiple") {
 			t.Fatalf("prompt must forbid invented extraction action names: %q", prompt)
 		}
+		// glm-5-turbo once omitted the required extract name and burned the whole
+		// attempt budget on a schema rejection (DSLWorkflowVersion v49 incident),
+		// so both prompts must state the name contract explicitly.
+		if !strings.Contains(prompt, `must carry a non-empty string "name"`) {
+			t.Fatalf("prompt must require a non-empty extraction name: %q", prompt)
+		}
 	}
-	if prompt.DSLWorkflowVersion != "dsl-workflow-v49" ||
+	if prompt.DSLWorkflowVersion != "dsl-workflow-v50" ||
 		WorkflowPromptVersion != prompt.DSLWorkflowVersion {
 		t.Fatalf(
 			"prompt contract change must bump the authoritative durable workflow version: prompt=%q workflow=%q",
