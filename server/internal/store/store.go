@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -129,6 +131,58 @@ func (s *Store) decryptVariables(v models.JSON) (models.JSON, error) {
 		return nil, fmt.Errorf("marshal decrypted variables: %w", err)
 	}
 	return models.JSON(plain), nil
+}
+
+// decryptVariablesParallel decrypts a page of task variables concurrently.
+// Each PBKDF2 blob costs ~90ms of CPU (600k iterations by design — the KDF
+// strength is a security contract, not to be weakened), so a serial 20-row
+// list costs ~1.8s; with N cores the wall time collapses to one derivation.
+// Order and first-error-by-index semantics match the serial loop.
+func (s *Store) decryptVariablesParallel(tasks []*models.Task) error {
+	if s.encryptionKey == "" || len(tasks) == 0 {
+		return nil
+	}
+	workers := runtime.NumCPU()
+	if workers > len(tasks) {
+		workers = len(tasks)
+	}
+	if workers <= 1 {
+		for _, t := range tasks {
+			plain, err := s.decryptVariables(t.Variables)
+			if err != nil {
+				return err
+			}
+			t.Variables = plain
+		}
+		return nil
+	}
+	errs := make([]error, len(tasks))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, workers)
+	for i, t := range tasks {
+		if len(t.Variables) == 0 {
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(task *models.Task, index int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			plain, err := s.decryptVariables(task.Variables)
+			if err != nil {
+				errs[index] = err
+				return
+			}
+			task.Variables = plain
+		}(t, i)
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type migration struct {
@@ -877,14 +931,13 @@ func (s *Store) ListTasks(ctx context.Context, filter ListTasksFilter) ([]*model
 			&t.BrowserProfileID, &t.CancelRequested); err != nil {
 			return nil, 0, fmt.Errorf("scan task: %w", err)
 		}
-		t.Variables, err = s.decryptVariables(t.Variables)
-		if err != nil {
-			return nil, 0, fmt.Errorf("decrypt task variables: %w", err)
-		}
 		tasks = append(tasks, t)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, 0, fmt.Errorf("iterate tasks: %w", err)
+	}
+	if err := s.decryptVariablesParallel(tasks); err != nil {
+		return nil, 0, err
 	}
 	return tasks, total, nil
 }
