@@ -123,13 +123,28 @@ func (s *Store) UpdateTaskStatusForAttempt(
 		completedAt = now
 	}
 	releaseLease := terminal
+	// error_type/error_message are failure evidence: only terminal statuses
+	// may write them, and a terminal SUCCESS clears residue from an earlier
+	// attempt. A non-terminal "running" update carries informational text
+	// (e.g. "Started rule <id>") that must never land in the error columns.
+	recordError := terminal && status != string(models.TaskStatusDone)
+	clearError := terminal && status == string(models.TaskStatusDone)
 	res, err := tx.ExecContext(ctx, `
 		UPDATE tasks SET status = ?, updated_at = ?, completed_at = COALESCE(?, completed_at),
-			error_type = COALESCE(NULLIF(?, ''), error_type),
-			error_message = COALESCE(NULLIF(?, ''), error_message),
-			lease_until = CASE WHEN ? THEN NULL ELSE lease_until END
+		 error_type = CASE
+			WHEN ? THEN COALESCE(NULLIF(?, ''), error_type)
+			WHEN ? THEN NULL
+			ELSE error_type END,
+		 error_message = CASE
+			WHEN ? THEN COALESCE(NULLIF(?, ''), error_message)
+			WHEN ? THEN NULL
+			ELSE error_message END,
+		 lease_until = CASE WHEN ? THEN NULL ELSE lease_until END
 		WHERE id = ? AND workspace_id = ? AND worker_id = ? AND current_attempt_id = ?
-	`, status, now, completedAt, errorType, message, releaseLease,
+	`, status, now, completedAt,
+		recordError, errorType, clearError,
+		recordError, message, clearError,
+		releaseLease,
 		taskID, workspace, workerID, attemptID)
 	if err != nil {
 		return false, err

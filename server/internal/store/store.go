@@ -1265,13 +1265,28 @@ func (s *Store) UpdateTaskStatus(ctx context.Context, taskID, workerID, status, 
 	if terminal {
 		completedAt = now
 	}
+	// Error columns hold failure evidence only: a "running" update's message
+	// is informational ("Started rule <id>") and must not be recorded as an
+	// error; a terminal success clears any residue from earlier attempts.
+	recordError := terminal && status != string(models.TaskStatusDone)
+	clearError := terminal && status == string(models.TaskStatusDone)
 	res, err := tx.ExecContext(ctx,
 		`UPDATE tasks SET status = ?, updated_at = ?, completed_at = COALESCE(?, completed_at),
-		 error_type = COALESCE(NULLIF(?, ''), error_type), error_message = COALESCE(NULLIF(?, ''), error_message),
+		 error_type = CASE
+			WHEN ? THEN COALESCE(NULLIF(?, ''), error_type)
+			WHEN ? THEN NULL
+			ELSE error_type END,
+		 error_message = CASE
+			WHEN ? THEN COALESCE(NULLIF(?, ''), error_message)
+			WHEN ? THEN NULL
+			ELSE error_message END,
 		 lease_until = CASE WHEN ? THEN NULL ELSE lease_until END
 		 WHERE id = ? AND workspace_id = ? AND worker_id = ?
 		   AND (status IN ('leased','running') OR (status = 'waiting_for_human' AND ?))`,
-		status, now, completedAt, errorType, message, releaseLease, taskID, workspace, workerID, mayCloseHumanWait)
+		status, now, completedAt,
+		recordError, errorType, clearError,
+		recordError, message, clearError,
+		releaseLease, taskID, workspace, workerID, mayCloseHumanWait)
 	if err != nil {
 		return err
 	}
