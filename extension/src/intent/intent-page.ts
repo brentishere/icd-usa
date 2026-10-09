@@ -1693,21 +1693,31 @@ export function completeWorkflowReplay(
         throw new Error(response.error || '服务端未能处理回放结果');
       }
       state.dslJobId = response.repairJob?.id ?? response.workflow.currentJobId ?? null;
+      state.repairCount = response.workflow.repairCount ?? state.repairCount;
+      state.maxRepairs = response.workflow.maxRepairs ?? state.maxRepairs;
       if (response.workflow.status === 'awaiting_replay' && response.workflow.provisionalRule) {
-        state.rule = response.workflow.provisionalRule;
-        state.repairCount = response.workflow.repairCount ?? state.repairCount;
-        state.maxRepairs = response.workflow.maxRepairs ?? state.maxRepairs;
-        state.yaml = response.workflow.provisionalYaml ?? '';
-        state.replayStatus = 'idle';
-        state.replayError = null;
-        renderPreview();
-        setStatus(`修复 ${response.workflow.repairCount}/${response.workflow.maxRepairs} 已完成，正在重新完整回放`, 'info');
-        state.loading = false;
-        repairStarted = true;
-        await startReplay();
-        return;
-      }
-      if (response.workflow.status === 'awaiting_confirmation') {
+        if (response.repairJob) {
+          state.rule = response.workflow.provisionalRule;
+          state.yaml = response.workflow.provisionalYaml ?? '';
+          state.replayStatus = 'idle';
+          state.replayError = null;
+          renderPreview();
+          setStatus(`修复 ${response.workflow.repairCount}/${response.workflow.maxRepairs} 已完成，正在重新完整回放`, 'info');
+          state.loading = false;
+          repairStarted = true;
+          await startReplay();
+          return;
+        }
+        // Failed replay with no auto repair: the reserved round is waiting for
+        // the operator. Keep the failure visible instead of restarting the
+        // same broken replay in a loop.
+        state.replayStatus = 'failure';
+        state.replayError = response.replay?.errorMessage || errorString || '回放未成功';
+        const remaining = Math.max(0, state.maxRepairs - state.repairCount);
+        setStatus(remaining > 0
+          ? `回放未成功；剩余 ${remaining} 次 AI 修正保留给你，可在下方描述问题让 AI 修正`
+          : '回放未成功', 'warning');
+      } else if (response.workflow.status === 'awaiting_confirmation') {
         state.replayStatus = 'success';
         state.replayError = null;
         setStatus('完整回放和输出结构验证成功，请明确确认规则版本', 'success');

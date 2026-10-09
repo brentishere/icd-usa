@@ -2048,3 +2048,121 @@ func TestRequestFeedbackRepairRunsUserRejectionThroughReplayPipeline(t *testing.
 		t.Fatalf("exhausted pre-check must not terminally fail the workflow: %+v", after)
 	}
 }
+
+func TestAutomaticRepairsReserveFinalRoundForOperatorFeedback(t *testing.T) {
+	persistence, ctx := newDSLManagerStore(t)
+	cfg := &config.Config{LLMEnabled: true}
+	manager := NewDSLManager(persistence, cfg, nil, zap.NewNop())
+
+	requirement := createDSLManagerRequirement(t, persistence, ctx, cfg, models.RequirementSourceLLM)
+	baseline := dslWorkflowBaseline()
+	workflow := &models.DSLWorkflow{
+		ID: "dsl-workflow-reserve", RequirementID: requirement.ID,
+		RecordingID: requirement.RecordingID, BrowserProfileID: "current-chrome-profile",
+	}
+	job, err := persistence.CreateDSLWorkflow(ctx, workflow, map[string]any{
+		"baselineRule": map[string]any{"id": baseline.ID},
+	}, store.DSLWorkflowOptions{MaxRepairs: 2, JobMaxAttempts: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := persistence.ClaimPendingDSLJob(context.Background(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed.ID != job.ID {
+		t.Fatalf("unexpected claimed job: %+v", claimed)
+	}
+	if err := persistence.CompleteDSLJob(ctx, claimed, baseline, "id: "+baseline.ID+"\n", map[string]any{"marker": "x"}); err != nil {
+		t.Fatal(err)
+	}
+
+	completeFailedReplay := func() (*models.DSLJob, error) {
+		attempt, err := persistence.StartDSLReplay(ctx, workflow.ID)
+		if err != nil {
+			return nil, err
+		}
+		_, repair, err := manager.CompleteReplay(ctx, workflow.ID, attempt.ID, ReplayCompletionInput{
+			Succeeded: false, ErrorCode: "REPLAY_FAILED", ErrorMessage: "replay failed",
+			Diagnostics: map[string]any{"code": "ELEMENT_NOT_FOUND"},
+		})
+		return repair, err
+	}
+
+	// Round 1: repairCount(0) < MaxRepairs-1(1), so the failure auto-repairs.
+	repair1, err := completeFailedReplay()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repair1 == nil || repair1.Kind != models.DSLJobRepair {
+		t.Fatalf("first failure should auto-repair: %+v", repair1)
+	}
+	claimed1, err := persistence.ClaimPendingDSLJob(context.Background(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := persistence.CompleteDSLJob(ctx, claimed1, baseline, "id: "+baseline.ID+"\n", map[string]any{"marker": "y"}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := persistence.GetDSLWorkflow(ctx, workflow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.RepairCount != 1 || stored.Status != models.DSLWorkflowAwaitingReplay {
+		t.Fatalf("unexpected post-repair workflow: %+v", stored)
+	}
+
+	// Round 2: repairCount(1) >= MaxRepairs-1(1) — the manager reserves the
+	// final round and the workflow parks in awaiting_replay instead of
+	// auto-repairing or failing.
+	repair2, err := completeFailedReplay()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repair2 != nil {
+		t.Fatalf("second failure must reserve the final round for the operator: %+v", repair2)
+	}
+	parked, err := persistence.GetDSLWorkflow(ctx, workflow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parked.Status != models.DSLWorkflowAwaitingReplay || parked.RepairCount != 1 {
+		t.Fatalf("expected operator-reserve parking: %+v", parked)
+	}
+
+	// The reserved round is spendable by an explicit operator feedback repair.
+	feedback, err := manager.RequestFeedbackRepair(ctx, workflow.ID, "点错了按钮，请修正", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if feedback == nil || feedback.Kind != models.DSLJobRepair {
+		t.Fatalf("feedback repair must use the reserved round: %+v", feedback)
+	}
+	claimedFeedback, err := persistence.ClaimPendingDSLJob(context.Background(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := persistence.CompleteDSLJob(ctx, claimedFeedback, baseline, "id: "+baseline.ID+"\n", map[string]any{"marker": "z"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Budget is now fully spent: failures terminally fail and feedback is
+	// rejected with the distinct exhaustion error.
+	repair3, err := completeFailedReplay()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repair3 != nil {
+		t.Fatalf("no repair budget may remain: %+v", repair3)
+	}
+	exhausted, err := persistence.GetDSLWorkflow(ctx, workflow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exhausted.Status != models.DSLWorkflowFailed {
+		t.Fatalf("fully exhausted workflow must fail terminally: %+v", exhausted)
+	}
+	if _, err := manager.RequestFeedbackRepair(ctx, workflow.ID, "再一次", nil); !errors.Is(err, store.ErrDSLRepairBudgetExhausted) {
+		t.Fatalf("expected budget exhaustion after terminal failure, got %v", err)
+	}
+}

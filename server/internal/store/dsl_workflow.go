@@ -1233,6 +1233,13 @@ func (s *Store) completeDSLReplayInTx(
 			return nil, "", "", "", 0, err
 		}
 		workflowStatus = models.DSLWorkflowRepairing
+	} else if terminalStatus == models.ReplayAttemptFailed && repairCount < maxRepairs {
+		// No repair was scheduled (the manager reserved the final round for
+		// the operator, or the reaper swept an expired attempt) while budget
+		// remains: park in awaiting_replay for an operator decision — an AI
+		// feedback repair, a manual correction, or another replay — instead
+		// of failing terminally behind the client's back.
+		workflowStatus = models.DSLWorkflowAwaitingReplay
 	}
 	updated, err := tx.ExecContext(ctx, `
 		UPDATE dsl_replay_attempts

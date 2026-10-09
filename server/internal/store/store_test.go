@@ -1258,7 +1258,7 @@ func TestMigrationsRecordVersions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31}
+	want := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}
 	if !slices.Equal(versions, want) {
 		t.Fatalf("expected schema_migrations versions %v, got %v", want, versions)
 	}
@@ -1275,8 +1275,8 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	if err := s.db.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 31 {
-		t.Fatalf("expected 31 recorded migrations after idempotent re-run, got %d", count)
+	if count != 32 {
+		t.Fatalf("expected 32 recorded migrations after idempotent re-run, got %d", count)
 	}
 }
 

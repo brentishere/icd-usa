@@ -34,6 +34,10 @@ func createConfirmedDSLRequirement(t *testing.T, s *Store, ctx context.Context, 
 }
 
 func createClaimedDSLWorkflow(t *testing.T, s *Store, ctx context.Context, suffix string) (*models.DSLWorkflow, *models.DSLJob) {
+	return createClaimedDSLWorkflowWithOptions(t, s, ctx, suffix)
+}
+
+func createClaimedDSLWorkflowWithOptions(t *testing.T, s *Store, ctx context.Context, suffix string, options ...DSLWorkflowOptions) (*models.DSLWorkflow, *models.DSLJob) {
 	t.Helper()
 	requirement := createConfirmedDSLRequirement(t, s, ctx, "dsl-recording-"+suffix, "dsl-requirement-"+suffix)
 	workflow := &models.DSLWorkflow{
@@ -43,7 +47,7 @@ func createClaimedDSLWorkflow(t *testing.T, s *Store, ctx context.Context, suffi
 	job, err := s.CreateDSLWorkflow(ctx, workflow, map[string]any{
 		"baselineRule": map[string]any{"id": "dsl-rule-" + suffix},
 		"marker":       "dsl-request-plaintext-marker-" + suffix,
-	})
+	}, options...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -834,7 +838,7 @@ func TestDSLWorkflowArtifactsAreEncryptedScopedReplayedAndApproved(t *testing.T)
 func TestCorrectDSLWorkflowReplacesEncryptedProvisionalAndPreservesHistory(t *testing.T) {
 	s := newEncryptedTestStore(t)
 	ctx := workspaceContext("alice", authz.DefaultWorkspaceID)
-	workflow, claimed := createClaimedDSLWorkflow(t, s, ctx, "correction")
+	workflow, claimed := createClaimedDSLWorkflowWithOptions(t, s, ctx, "correction", DSLWorkflowOptions{MaxRepairs: 0})
 	rule := completeDSLGeneration(t, s, ctx, workflow, claimed, "correction")
 	before, err := s.GetDSLWorkflow(ctx, workflow.ID)
 	if err != nil {
@@ -1063,7 +1067,7 @@ func TestDSLJobRetriesLeaseAndThenFailsWorkflow(t *testing.T) {
 func TestFailExpiredReplayAttemptsTransitionsRunningToFailed(t *testing.T) {
 	s := newEncryptedTestStore(t)
 	ctx := workspaceContext("alice", authz.DefaultWorkspaceID)
-	workflow, job := createClaimedDSLWorkflow(t, s, ctx, "replay-reaper")
+	workflow, job := createClaimedDSLWorkflowWithOptions(t, s, ctx, "replay-reaper", DSLWorkflowOptions{MaxRepairs: 0})
 	completeDSLGeneration(t, s, ctx, workflow, job, "replay-reaper")
 	attempt, err := s.StartDSLReplay(ctx, workflow.ID)
 	if err != nil {
@@ -1159,14 +1163,19 @@ func TestFailExpiredReplayAttemptsDoesNotScheduleRepairEvenWithBudget(t *testing
 		t.Fatalf("expected attempt status='failed', got %q", status)
 	}
 
-	// Workflow is failed (NOT repairing — no repair scheduled, even with
-	// MaxRepairs=3, because the reaper passes repairRequest=nil).
-	failedWorkflow, err := s.GetDSLWorkflow(ctx, workflow.ID)
+	// Operator-reserve parking: the reaper passes repairRequest=nil, so no
+	// repair is scheduled even with MaxRepairs=3, but the remaining budget
+	// parks the workflow in awaiting_replay for an operator decision instead
+	// of failing it terminally.
+	parked, err := s.GetDSLWorkflow(ctx, workflow.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if failedWorkflow.Status != models.DSLWorkflowFailed {
-		t.Fatalf("expected workflow status='failed' (no repair scheduled), got %q", failedWorkflow.Status)
+	if parked.Status != models.DSLWorkflowAwaitingReplay {
+		t.Fatalf("expected workflow status='awaiting_replay' (operator reserve), got %q", parked.Status)
+	}
+	if parked.RepairCount != 0 {
+		t.Fatalf("parked workflow must not consume repair budget: %+v", parked)
 	}
 
 	// No dsl_jobs row beyond the initial generation job. After generation

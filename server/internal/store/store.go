@@ -223,6 +223,7 @@ var migrations = []migration{
 	{29, "dsl workflow budget envelope", migration029},
 	{30, "dsl approval and rule version provenance", migration030},
 	{31, "idempotency cache", migration031},
+	{32, "dsl workflow operator-reserve parking", migration032},
 }
 
 func migrate(db *sql.DB) error {
@@ -2628,7 +2629,7 @@ BEFORE UPDATE OF status ON dsl_workflows
 WHEN NEW.status != OLD.status AND NOT (
        (OLD.status = 'generating' AND NEW.status IN ('awaiting_replay','failed'))
     OR (OLD.status = 'awaiting_replay' AND NEW.status IN ('replaying','failed'))
-    OR (OLD.status = 'replaying' AND NEW.status IN ('awaiting_confirmation','repairing','failed'))
+    OR (OLD.status = 'replaying' AND NEW.status IN ('awaiting_confirmation','repairing','awaiting_replay','failed'))
     OR (OLD.status = 'repairing' AND NEW.status IN ('awaiting_replay','failed'))
     OR (OLD.status = 'awaiting_confirmation' AND NEW.status IN ('replaying','approved','failed'))
 )
@@ -3057,7 +3058,7 @@ BEFORE UPDATE OF status ON dsl_workflows
 WHEN NEW.status != OLD.status AND NOT (
        (OLD.status = 'generating' AND NEW.status IN ('awaiting_replay','failed'))
     OR (OLD.status = 'awaiting_replay' AND NEW.status IN ('replaying','failed'))
-    OR (OLD.status = 'replaying' AND NEW.status IN ('awaiting_confirmation','repairing','failed'))
+    OR (OLD.status = 'replaying' AND NEW.status IN ('awaiting_confirmation','repairing','awaiting_replay','failed'))
     OR (OLD.status = 'repairing' AND NEW.status IN ('awaiting_replay','failed'))
     OR (OLD.status = 'awaiting_confirmation' AND NEW.status IN ('replaying','approved','failed'))
     OR (OLD.status = 'failed' AND NEW.status = 'awaiting_replay')
@@ -3725,7 +3726,7 @@ BEFORE UPDATE OF status ON dsl_workflows
 WHEN NEW.status != OLD.status AND NOT (
        (OLD.status = 'generating' AND NEW.status IN ('repairing','awaiting_replay','failed'))
     OR (OLD.status = 'awaiting_replay' AND NEW.status IN ('replaying','failed'))
-    OR (OLD.status = 'replaying' AND NEW.status IN ('awaiting_confirmation','repairing','failed'))
+    OR (OLD.status = 'replaying' AND NEW.status IN ('awaiting_confirmation','repairing','awaiting_replay','failed'))
     OR (OLD.status = 'repairing' AND NEW.status IN ('awaiting_replay','failed'))
     OR (OLD.status = 'awaiting_confirmation' AND NEW.status IN ('replaying','approved','failed'))
     OR (OLD.status = 'failed' AND NEW.status = 'awaiting_replay')
@@ -4217,6 +4218,29 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
     PRIMARY KEY (workspace_id, key)
 );
 CREATE INDEX IF NOT EXISTS idx_idempotency_keys_expires ON idempotency_keys(expires_at);
+`)
+	return err
+}
+
+// migration032 widens the DSL workflow state machine for the operator
+// reserve: a completed-but-failed replay may park in awaiting_replay when a
+// repair round is still held for the operator, instead of only repairing or
+// failing terminally. Existing databases keep their old trigger, so drop and
+// recreate it explicitly.
+func migration032(tx *sql.Tx) error {
+	_, err := tx.Exec(`
+DROP TRIGGER IF EXISTS trg_dsl_workflows_state_transition;
+CREATE TRIGGER trg_dsl_workflows_state_transition
+BEFORE UPDATE OF status ON dsl_workflows
+WHEN NEW.status != OLD.status AND NOT (
+       (OLD.status = 'generating' AND NEW.status IN ('repairing','awaiting_replay','failed'))
+    OR (OLD.status = 'awaiting_replay' AND NEW.status IN ('replaying','failed'))
+    OR (OLD.status = 'replaying' AND NEW.status IN ('awaiting_confirmation','repairing','awaiting_replay','failed'))
+    OR (OLD.status = 'repairing' AND NEW.status IN ('awaiting_replay','failed'))
+    OR (OLD.status = 'awaiting_confirmation' AND NEW.status IN ('replaying','approved','failed'))
+    OR (OLD.status = 'failed' AND NEW.status = 'awaiting_replay')
+)
+BEGIN SELECT RAISE(ABORT, 'invalid dsl workflow state transition'); END;
 `)
 	return err
 }

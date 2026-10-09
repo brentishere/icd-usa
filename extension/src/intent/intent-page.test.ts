@@ -3363,6 +3363,73 @@ describe('wizard generation failure surfaces the correction editor', () => {
   });
 });
 
+describe('completeWorkflowReplay operator reserve', () => {
+  beforeEach(() => {
+    document.body.innerHTML = WIZARD_HTML;
+  });
+
+  it('parks a repairless failed replay for the operator instead of auto-replaying', async () => {
+    const { mod, sendMessage } = await importModule({
+      COMPLETE_DSL_REPLAY: {
+        success: true,
+        workflow: {
+          id: 'wf-1',
+          status: 'awaiting_replay',
+          repairCount: 1,
+          maxRepairs: 2,
+          provisionalRule: sampleRule,
+        },
+        replay: { id: 'r-1', errorMessage: 'TimeoutError' },
+      },
+    });
+    mod.state.workflowV2 = true;
+    mod.state.dslWorkflowId = 'wf-1';
+    mod.state.replayAttemptId = 'r-1';
+    mod.state.replayStatus = 'running';
+
+    await mod.completeWorkflowReplay({ status: 'failure', message: 'TimeoutError' });
+
+    // No auto restart: the operator decides between an AI feedback repair,
+    // a manual correction, or another replay.
+    expect((sendMessage as Mock).mock.calls.some(
+      (call: unknown[]) => (call[0] as { action: string }).action === 'START_DSL_REPLAY',
+    )).toBe(false);
+    expect(mod.state.replayStatus).toBe('failure');
+    expect(mod.state.replayError).toContain('TimeoutError');
+    const status = document.getElementById('status');
+    expect(status?.textContent).toContain('剩余 1 次 AI 修正保留给你');
+  });
+
+  it('still auto-replays after a real repair job completed', async () => {
+    const { mod, sendMessage } = await importModule({
+      COMPLETE_DSL_REPLAY: {
+        success: true,
+        workflow: {
+          id: 'wf-1',
+          status: 'awaiting_replay',
+          repairCount: 1,
+          maxRepairs: 2,
+          provisionalRule: sampleRule,
+        },
+        repairJob: { id: 'repair-1', workflowId: 'wf-1', kind: 'repair', status: 'completed' },
+      },
+      START_DSL_REPLAY: { success: true, replay: { id: 'r-2' } },
+      START_REPLAY: { success: true, taskId: 't-2' },
+    });
+    mod.state.workflowV2 = true;
+    mod.state.dslWorkflowId = 'wf-1';
+    mod.state.replayAttemptId = 'r-1';
+    mod.state.replayStatus = 'running';
+    mod.state.normalizedRequirement = { title: 't', requiredInputs: [], optionalInputs: [], outputFields: [] } as never;
+
+    await mod.completeWorkflowReplay({ status: 'failure', message: 'wrong selector' });
+
+    expect((sendMessage as Mock).mock.calls.some(
+      (call: unknown[]) => (call[0] as { action: string }).action === 'START_DSL_REPLAY',
+    )).toBe(true);
+  });
+});
+
 describe('requestFeedbackRepair', () => {
   beforeEach(() => {
     document.body.innerHTML = WIZARD_HTML;

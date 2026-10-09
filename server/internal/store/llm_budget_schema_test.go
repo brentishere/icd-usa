@@ -405,8 +405,8 @@ func TestMigration026UpgradesPopulatedV25WithoutRewritingHistory(t *testing.T) {
 	if err := rawDB.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&currentVersion); err != nil {
 		t.Fatalf("read migrated version: %v", err)
 	}
-	if currentVersion != 31 {
-		t.Fatalf("schema version = %d, want 31", currentVersion)
+	if currentVersion != 32 {
+		t.Fatalf("schema version = %d, want 32", currentVersion)
 	}
 	var providerCallUnique, providerCallPartial int
 	if err := rawDB.QueryRow(`

@@ -891,7 +891,14 @@ func (m *Manager) CompleteReplay(ctx context.Context, workflowID, replayID strin
 		ReplaySequence: attempt.Sequence,
 	}
 	var repair any = repairRequest
-	if input.Succeeded && outputValid {
+	// Operator reserve: automatic replay-failure repairs may consume at most
+	// MaxRepairs-1 rounds (when budget >= 2). Once only one round remains,
+	// stop auto-repairing — the store parks the workflow in awaiting_replay
+	// so the wizard can offer an explicit AI feedback repair (which may use
+	// the full budget) or a manual correction instead of failing terminally
+	// behind the operator's back.
+	reserveForOperator := workflow.MaxRepairs > 1 && workflow.RepairCount >= workflow.MaxRepairs-1
+	if (input.Succeeded && outputValid) || reserveForOperator {
 		repair = nil
 	}
 	repairJob, err := m.store.CompleteDSLReplay(ctx, attempt, input.Succeeded, outputValid,
