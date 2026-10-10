@@ -2479,6 +2479,30 @@ async function handleMessage(
         return dslWorkflowResult(workflow, { replay: response.replay, repairJob: response.repairJob });
       } catch (error) {
         const code = error instanceof ServerRequestError ? error.code : undefined;
+        // A duplicate completion racing the authoritative one (REPLAY_COMPLETE
+        // broadcast vs. the wizard's direct call, or a cancel racing a natural
+        // finish) surfaces as a state conflict. The server is the source of
+        // truth: reconcile from the current workflow state — polling first if
+        // another actor left it mid-repair — instead of showing the operator
+        // a confusing conflict for a replay that actually completed.
+        const isStateConflict = code === 'INVALID_STATE'
+          || (error instanceof Error && error.message.includes('cannot transition from its current state'));
+        if (isStateConflict) {
+          try {
+            let workflow = (await requirementRequest<DSLWorkflowResponse>(
+              `/api/v1/dsl-workflows/${encodeURIComponent(payload.workflowId)}`,
+            )).workflow;
+            if (workflow && (workflow.status === 'generating' || workflow.status === 'repairing')) {
+              workflow = await pollDSLWorkflow(payload.workflowId);
+            }
+            if (workflow) {
+              await rememberDSLWorkflow(workflow, payload.replayId);
+              return dslWorkflowResult(workflow, { replayConflictReconciled: true });
+            }
+          } catch {
+            // Reconciliation failed; surface the original conflict below.
+          }
+        }
         return {
           success: false,
           error: error instanceof Error ? error.message : String(error),

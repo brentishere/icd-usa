@@ -2111,6 +2111,99 @@ describe('background service worker', () => {
       expect(chromeMock.mock.tabs.remove).toHaveBeenCalledWith(321);
       expect(chromeMock.sessionStorage.oc_replay_retained_tab).toBeUndefined();
     });
+    it('reconciles a duplicate completion conflict from the authoritative workflow state', async () => {
+      // Live incident: the wizard's completion and the REPLAY_COMPLETE
+      // broadcast raced; the first POST succeeded (awaiting_confirmation)
+      // and the second got 409 INVALID_STATE, which the wizard surfaced as a
+      // replay error even though the replay had succeeded. The background
+      // must reconcile from the server instead.
+      const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+      fetchMock.mockReset();
+      fetchMock.mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: async () => ({
+          error: 'dsl workflow cannot transition from its current state',
+          code: 'INVALID_STATE',
+        }),
+      });
+      fetchMock.mockResolvedValueOnce({
+        ok: true, status: 200, json: async () => ({
+          workflow: {
+            id: 'dsl-workflow-1', requirementId: 'requirement-1', recordingId: 'recording-dsl-1',
+            status: 'awaiting_confirmation', browserProfileId: 'current-chrome-profile',
+            repairCount: 0, maxRepairs: 3,
+          },
+        }),
+      });
+      await expect(sendMessage({
+        action: 'COMPLETE_DSL_REPLAY',
+        payload: {
+          workflowId: 'dsl-workflow-1', replayId: 'replay-1', succeeded: true,
+          output: { result: 'ok' }, errorCode: '', errorMessage: '',
+        },
+      })).resolves.toMatchObject({
+        success: true,
+        workflow: { status: 'awaiting_confirmation' },
+        replayConflictReconciled: true,
+      });
+    });
+
+    it('reconciles a duplicate completion conflict through a running repair', async () => {
+      const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+      fetchMock.mockReset();
+      fetchMock.mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: async () => ({
+          error: 'dsl workflow cannot transition from its current state',
+          code: 'INVALID_STATE',
+        }),
+      });
+      // The conflicting actor left the workflow mid-repair: poll to a
+      // settled state before returning it.
+      const repairing = { id: 'dsl-workflow-1', status: 'repairing', repairCount: 1, maxRepairs: 3 };
+      const settled = {
+        id: 'dsl-workflow-1', requirementId: 'requirement-1', recordingId: 'recording-dsl-1',
+        status: 'awaiting_replay', browserProfileId: 'current-chrome-profile',
+        repairCount: 1, maxRepairs: 3, provisionalRule: { id: 'r' },
+      };
+      fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ workflow: repairing }) });
+      fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ workflow: settled }) });
+      await expect(sendMessage({
+        action: 'COMPLETE_DSL_REPLAY',
+        payload: {
+          workflowId: 'dsl-workflow-1', replayId: 'replay-1', succeeded: false,
+          errorCode: 'REPLAY_FAILED', errorMessage: 'boom',
+        },
+      })).resolves.toMatchObject({
+        success: true,
+        workflow: { status: 'awaiting_replay' },
+        replayConflictReconciled: true,
+      });
+    });
+
+    it('surfaces the conflict when reconciliation has no workflow to use', async () => {
+      const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
+      fetchMock.mockReset();
+      fetchMock.mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: async () => ({
+          error: 'dsl workflow cannot transition from its current state',
+          code: 'INVALID_STATE',
+        }),
+      });
+      fetchMock.mockRejectedValueOnce(new Error('network down'));
+      await expect(sendMessage({
+        action: 'COMPLETE_DSL_REPLAY',
+        payload: { workflowId: 'dsl-workflow-1', replayId: 'replay-1', succeeded: false },
+      })).resolves.toMatchObject({
+        success: false,
+        error: expect.stringContaining('cannot transition') as unknown,
+      });
+    });
+
 
     it('does not resume a dsl workflow stored for a different recording', async () => {
       const fetchMock = global.fetch as ReturnType<typeof vi.fn>;
